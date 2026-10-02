@@ -5,8 +5,11 @@ import { getVocabulary, deleteVocabulary } from "../services/api";
 function Vocabulary() {
     const navigate = useNavigate();
     const [words, setWords] = useState([]);
+    const [searchQuery, setSearchQuery] = useState("");
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
+    const [deletingId, setDeletingId] = useState(null);
+    const [successMessage, setSuccessMessage] = useState("");
 
     const handleLogout = () => {
         localStorage.removeItem("token");
@@ -32,17 +35,35 @@ function Vocabulary() {
         };
     }, []);
 
-    const handleDelete = async (id) => {
+    const handleDelete = async (id, wordText) => {
         try {
+            setDeletingId(id);
+            setError("");
             await deleteVocabulary(id);
             setWords((prev) => prev.filter((w) => w._id !== id));
+            setSuccessMessage(`Removed "${wordText}" from your vocabulary.`);
+            setTimeout(() => {
+                setSuccessMessage("");
+            }, 3000);
         } catch (err) {
-            alert(err.message || "Failed to delete word");
+            setError(err.message || "Failed to delete word");
+        } finally {
+            setDeletingId(null);
         }
     };
 
+    const filteredWords = words.filter((item) => {
+        if (!searchQuery.trim()) return true;
+        const query = searchQuery.toLowerCase().trim();
+        const matchesWord = item.word?.toLowerCase().includes(query);
+        const matchesHindi = item.hindiMeaning?.toLowerCase().includes(query);
+        const matchesDef = item.definition?.toLowerCase().includes(query);
+        return matchesWord || matchesHindi || matchesDef;
+    });
+
     return (
         <div className="reader-page">
+            {/* Header */}
             <header className="reader-header">
                 <Link to="/reader" className="reader-brand">
                     <span>📖</span>
@@ -51,7 +72,8 @@ function Vocabulary() {
 
                 <div className="reader-actions">
                     <Link to="/reader" className="reader-btn-secondary">
-                        ◀ Back to Reader
+                        <span>◀</span>
+                        <span>Back to Reader</span>
                     </Link>
                     <button
                         type="button"
@@ -63,21 +85,57 @@ function Vocabulary() {
                 </div>
             </header>
 
-            <main style={{ maxWidth: "800px", width: "100%", margin: "32px auto", padding: "0 20px" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "24px" }}>
+            {/* Main Vocabulary Container */}
+            <main className="vocab-container">
+                <div className="vocab-header-section">
                     <div>
-                        <h2 style={{ fontSize: "28px", color: "#111", marginBottom: "6px" }}>My Vocabulary</h2>
-                        <p style={{ color: "#666", fontSize: "14px" }}>
+                        <h1 className="vocab-title">My Vocabulary</h1>
+                        <p className="vocab-subtitle">
                             {words.length} {words.length === 1 ? "word" : "words"} saved from your reading sessions
                         </p>
                     </div>
+
+                    {words.length > 0 && (
+                        <div className="vocab-search-wrapper">
+                            <input
+                                type="text"
+                                className="vocab-search-input"
+                                placeholder="Search saved words or meanings..."
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                            />
+                            {searchQuery && (
+                                <button
+                                    type="button"
+                                    className="vocab-search-clear"
+                                    onClick={() => setSearchQuery("")}
+                                    title="Clear search"
+                                >
+                                    ✕
+                                </button>
+                            )}
+                        </div>
+                    )}
                 </div>
 
-                {error && <div className="auth-error">{error}</div>}
+                {error && (
+                    <div className="auth-error" role="alert">
+                        <span className="auth-error-icon">⚠️</span>
+                        <span>{error}</span>
+                    </div>
+                )}
+
+                {successMessage && (
+                    <div className="vocab-success-toast">
+                        <span>✓</span>
+                        <span>{successMessage}</span>
+                    </div>
+                )}
 
                 {loading && (
-                    <div style={{ textAlign: "center", padding: "40px", color: "#666" }}>
-                        Loading your saved words...
+                    <div className="vocab-loading-state">
+                        <div className="btn-spinner large" />
+                        <p>Loading your saved words...</p>
                     </div>
                 )}
 
@@ -85,87 +143,81 @@ function Vocabulary() {
                     <div className="upload-card">
                         <div className="upload-card-icon">📚</div>
                         <h3>No Saved Words Yet</h3>
-                        <p>Open any PDF in the Reader, select an English word, and click "Save Word".</p>
+                        <p>
+                            Open any English PDF in the Reader, select an unfamiliar word, and click "Save Word".
+                        </p>
                         <Link to="/reader" className="reader-btn-primary" style={{ textDecoration: "none" }}>
                             Open Reader
                         </Link>
                     </div>
                 )}
 
-                {!loading && words.length > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
-                        {words.map((item) => (
-                            <div
-                                key={item._id}
-                                style={{
-                                    background: "white",
-                                    border: "1px solid #e7e7e7",
-                                    borderRadius: "12px",
-                                    padding: "20px 24px",
-                                    boxShadow: "0 2px 8px rgba(0, 0, 0, 0.04)",
-                                }}
-                            >
-                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "10px" }}>
-                                    <div>
-                                        <div style={{ display: "flex", alignItems: "baseline", gap: "10px" }}>
-                                            <span style={{ fontSize: "22px", fontWeight: "700", color: "#111" }}>
+                {!loading && words.length > 0 && filteredWords.length === 0 && (
+                    <div className="vocab-no-results">
+                        <p>No words found matching "<strong>{searchQuery}</strong>".</p>
+                        <button
+                            type="button"
+                            className="reader-btn-secondary"
+                            onClick={() => setSearchQuery("")}
+                        >
+                            Reset Search Filter
+                        </button>
+                    </div>
+                )}
+
+                {!loading && filteredWords.length > 0 && (
+                    <div className="vocab-list">
+                        {filteredWords.map((item) => {
+                            const isDeleting = deletingId === item._id;
+                            return (
+                                <div
+                                    key={item._id}
+                                    className={`vocab-card ${isDeleting ? "deleting" : ""}`}
+                                >
+                                    <div className="vocab-card-header">
+                                        <div className="vocab-card-word-group">
+                                            <span className="vocab-card-word">
                                                 {item.word}
                                             </span>
                                             {item.phonetic && (
-                                                <span style={{ fontSize: "13px", color: "#888" }}>
+                                                <span className="vocab-card-phonetic">
                                                     {item.phonetic}
                                                 </span>
                                             )}
                                         </div>
+
+                                        <button
+                                            type="button"
+                                            className="vocab-delete-btn"
+                                            onClick={() => handleDelete(item._id, item.word)}
+                                            disabled={isDeleting}
+                                            title="Delete word from vocabulary"
+                                        >
+                                            {isDeleting ? "Deleting..." : "🗑️ Delete"}
+                                        </button>
                                     </div>
-                                    <button
-                                        type="button"
-                                        onClick={() => handleDelete(item._id)}
-                                        style={{
-                                            background: "none",
-                                            border: "none",
-                                            color: "#dc2626",
-                                            cursor: "pointer",
-                                            fontSize: "13px",
-                                            padding: "4px 8px",
-                                        }}
-                                        title="Delete word"
-                                    >
-                                        Delete
-                                    </button>
+
+                                    {item.hindiMeaning && (
+                                        <div className="vocab-hindi-pill">
+                                            <span className="vocab-hindi-label">Hindi:</span>
+                                            <span>{item.hindiMeaning}</span>
+                                        </div>
+                                    )}
+
+                                    {item.definition && (
+                                        <div className="vocab-definition">
+                                            {item.definition}
+                                        </div>
+                                    )}
+
+                                    {item.exampleSentence && (
+                                        <div className="vocab-example">
+                                            “{item.exampleSentence}”
+                                        </div>
+                                    )}
                                 </div>
-
-                                {item.hindiMeaning && (
-                                    <div
-                                        style={{
-                                            display: "inline-block",
-                                            background: "#f4f3ec",
-                                            border: "1px solid #e7e5dc",
-                                            padding: "4px 10px",
-                                            borderRadius: "6px",
-                                            fontSize: "16px",
-                                            fontWeight: "600",
-                                            color: "#222",
-                                            marginBottom: "12px",
-                                        }}
-                                    >
-                                        {item.hindiMeaning}
-                                    </div>
-                                )}
-
-                                {item.definition && (
-                                    <p style={{ fontSize: "14px", color: "#333", lineHeight: "1.5", marginBottom: "8px" }}>
-                                        {item.definition}
-                                    </p>
-                                )}
-
-                                {item.exampleSentence && (
-                                    <p style={{ fontSize: "13px", color: "#666", fontStyle: "italic", background: "#fafaf8", padding: "6px 10px", borderLeft: "3px solid #ddd", borderRadius: "0 6px 6px 0" }}>
-                                        “{item.exampleSentence}”
-                                    </p>
-                                )}
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </main>

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../services/api";
 
@@ -12,6 +12,13 @@ function Login() {
 
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+
+    // Redirect to reader if already logged in
+    useEffect(() => {
+        if (localStorage.getItem("token")) {
+            navigate("/reader", { replace: true });
+        }
+    }, [navigate]);
 
     const handleChange = (e) => {
         const { id, value } = e.target;
@@ -85,20 +92,28 @@ function Login() {
 
                 <div className="auth-heading">
                     <h2>Welcome back</h2>
-                    <p>Continue your reading journey.</p>
+                    <p>Continue your reading and vocabulary journey.</p>
                 </div>
 
-                {error && <div className="auth-error">{error}</div>}
+                {error && (
+                    <div className="auth-error" role="alert">
+                        <span className="auth-error-icon">⚠️</span>
+                        <span>{error}</span>
+                    </div>
+                )}
 
-                <form onSubmit={handleSubmit}>
+                <form onSubmit={handleSubmit} noValidate>
                     <div className="form-group">
-                        <label htmlFor="email">Email</label>
+                        <label htmlFor="email">Email Address</label>
                         <input
                             id="email"
                             type="email"
                             placeholder="you@example.com"
+                            autoComplete="email"
                             value={formData.email}
                             onChange={handleChange}
+                            disabled={loading}
+                            required
                         />
                     </div>
 
@@ -108,8 +123,11 @@ function Login() {
                             id="password"
                             type="password"
                             placeholder="Enter your password"
+                            autoComplete="current-password"
                             value={formData.password}
                             onChange={handleChange}
+                            disabled={loading}
+                            required
                         />
                     </div>
 
@@ -118,7 +136,14 @@ function Login() {
                         className="auth-button"
                         disabled={loading}
                     >
-                        {loading ? "Logging in..." : "Login"}
+                        {loading ? (
+                            <span className="btn-loading-wrapper">
+                                <span className="btn-spinner" />
+                                <span>Logging in...</span>
+                            </span>
+                        ) : (
+                            "Log In"
+                        )}
                     </button>
                 </form>
 

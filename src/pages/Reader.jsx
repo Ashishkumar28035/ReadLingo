@@ -35,14 +35,15 @@ function Reader() {
     const [isWordSaved, setIsWordSaved] = useState(false);
     const [savingWord, setSavingWord] = useState(false);
 
+    const [isDragging, setIsDragging] = useState(false);
+
     const handleLogout = () => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
         navigate("/login");
     };
 
-    const handleFileSelect = async (e) => {
-        const file = e.target.files?.[0];
+    const loadPdfFile = async (file) => {
         if (!file) return;
 
         // Validation: Accept only PDF
@@ -75,6 +76,11 @@ function Reader() {
                 fileInputRef.current.value = "";
             }
         }
+    };
+
+    const handleFileSelect = (e) => {
+        const file = e.target.files?.[0];
+        if (file) loadPdfFile(file);
     };
 
     // Render the current page on canvas + textLayer
@@ -287,13 +293,18 @@ function Reader() {
             return;
         }
 
-        const popupWidth = 320;
+        const popupWidth = Math.min(330, window.innerWidth - 32);
         let left = rect.left + rect.width / 2 - popupWidth / 2;
         left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
 
-        let top = rect.bottom + 8;
-        if (top + 280 > window.innerHeight && rect.top > 280) {
-            top = rect.top - 280;
+        const estimatedHeight = 310;
+        let top = rect.bottom + 10;
+        if (top + estimatedHeight > window.innerHeight) {
+            if (rect.top - estimatedHeight - 10 > 10) {
+                top = rect.top - estimatedHeight - 10;
+            } else {
+                top = Math.max(16, window.innerHeight - estimatedHeight - 16);
+            }
         }
 
         // 1. Show popup immediately with selected word and loading state
@@ -368,6 +379,17 @@ function Reader() {
         window.addEventListener("keydown", handleKeyDown);
         return () => {
             window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [popupVisible, closePopup]);
+
+    // Close popup on window resize
+    useEffect(() => {
+        const handleResize = () => {
+            if (popupVisible) closePopup();
+        };
+        window.addEventListener("resize", handleResize);
+        return () => {
+            window.removeEventListener("resize", handleResize);
         };
     }, [popupVisible, closePopup]);
 
@@ -478,7 +500,8 @@ function Reader() {
                     </button>
 
                     <Link to="/vocabulary" className="reader-btn-secondary">
-                        Vocabulary
+                        <span>📚</span>
+                        <span>Vocabulary</span>
                     </Link>
 
                     <button
@@ -493,8 +516,11 @@ function Reader() {
 
             {/* Error Message */}
             {error && (
-                <div style={{ padding: "16px 24px 0", maxWidth: "600px", margin: "0 auto" }}>
-                    <div className="auth-error">{error}</div>
+                <div style={{ padding: "16px 24px 0", maxWidth: "680px", margin: "0 auto", width: "100%" }}>
+                    <div className="auth-error" role="alert">
+                        <span className="auth-error-icon">⚠️</span>
+                        <span>{error}</span>
+                    </div>
                 </div>
             )}
 
@@ -508,50 +534,54 @@ function Reader() {
                             className="toolbar-btn"
                             onClick={handlePrevPage}
                             disabled={currentPage <= 1}
+                            title="Previous Page"
                         >
-                            ◀ Previous
+                            ◀ Prev
                         </button>
                         <span className="toolbar-info">
-                            Page {currentPage} of {totalPages}
+                            Page <strong>{currentPage}</strong> of <strong>{totalPages}</strong>
                         </span>
                         <button
                             type="button"
                             className="toolbar-btn"
                             onClick={handleNextPage}
                             disabled={currentPage >= totalPages}
+                            title="Next Page"
                         >
                             Next ▶
                         </button>
                     </div>
 
+                    <div className="toolbar-divider" />
+
                     {/* Zoom Controls */}
                     <div className="toolbar-group">
                         <button
                             type="button"
-                            className="toolbar-btn"
+                            className="toolbar-btn icon-btn"
                             onClick={handleZoomOut}
                             disabled={scale <= 0.6}
                             title="Zoom Out"
                         >
-                            − Zoom
+                            −
                         </button>
-                        <span className="toolbar-info">
+                        <span className="toolbar-info zoom-info">
                             {Math.round(scale * 100)}%
                         </span>
                         <button
                             type="button"
-                            className="toolbar-btn"
+                            className="toolbar-btn icon-btn"
                             onClick={handleZoomIn}
                             disabled={scale >= 3.0}
                             title="Zoom In"
                         >
-                            + Zoom
+                            +
                         </button>
                         <button
                             type="button"
                             className="toolbar-btn"
                             onClick={handleResetZoom}
-                            title="Reset Zoom"
+                            title="Reset to 120%"
                         >
                             Reset
                         </button>
@@ -562,23 +592,43 @@ function Reader() {
             {/* Reader Main Content */}
             <main className="reader-content">
                 {loading && (
-                    <div style={{ textAlign: "center", padding: "60px 0", color: "#666" }}>
-                        Loading PDF document...
+                    <div className="reader-loading-state">
+                        <div className="btn-spinner large" />
+                        <p>Loading PDF document...</p>
                     </div>
                 )}
 
                 {!pdfDoc && !loading && (
-                    <div className="upload-card">
-                        <div className="upload-card-icon">📄</div>
-                        <h3>No Book Open</h3>
-                        <p>Upload any English PDF book to start reading and learning.</p>
+                    <div
+                        className={`upload-card ${isDragging ? "dragging" : ""}`}
+                        onDragOver={(e) => {
+                            e.preventDefault();
+                            setIsDragging(true);
+                        }}
+                        onDragLeave={() => setIsDragging(false)}
+                        onDrop={(e) => {
+                            e.preventDefault();
+                            setIsDragging(false);
+                            const file = e.dataTransfer.files?.[0];
+                            if (file) loadPdfFile(file);
+                        }}
+                    >
+                        <div className="upload-card-icon">📖</div>
+                        <h3>Upload an English Book or PDF</h3>
+                        <p>
+                            Select or drop any PDF document here to start reading and translating unfamiliar words.
+                        </p>
                         <button
                             type="button"
                             className="reader-btn-primary"
                             onClick={() => fileInputRef.current?.click()}
                         >
-                            Choose PDF File
+                            <span>📂</span>
+                            <span>Choose PDF File</span>
                         </button>
+                        <div className="upload-card-badge">
+                            Client-Side Only • Private & Temporary
+                        </div>
                     </div>
                 )}
 
@@ -625,15 +675,16 @@ function Reader() {
                                 e.stopPropagation();
                                 closePopup();
                             }}
-                            title="Close"
+                            title="Close (Esc)"
                         >
                             ✕
                         </button>
                     </div>
 
                     {popupLoading && (
-                        <div style={{ padding: "20px 0", textAlign: "center", color: "#777", fontSize: "14px" }}>
-                            Loading meaning...
+                        <div className="popup-loading">
+                            <div className="btn-spinner" />
+                            <span>Looking up word & meaning...</span>
                         </div>
                     )}
 
@@ -645,9 +696,10 @@ function Reader() {
 
                     {wordData && !popupLoading && (
                         <>
-                            {/* Hindi Meaning (displays pure Hindi translation without artifacts) */}
+                            {/* Hindi Meaning */}
                             {wordData.hindiMeaning && (
                                 <div className="popup-hindi-badge">
+                                    <span className="popup-hindi-label">Hindi:</span>
                                     <span>{wordData.hindiMeaning}</span>
                                 </div>
                             )}
@@ -670,7 +722,7 @@ function Reader() {
                                 </div>
                             </div>
 
-                            {/* Save Word Button (Only saves when user clicks) */}
+                            {/* Save Word Button */}
                             <div className="popup-footer">
                                 <button
                                     type="button"
@@ -678,11 +730,22 @@ function Reader() {
                                     onClick={handleSaveWord}
                                     disabled={savingWord || isWordSaved}
                                 >
-                                    {isWordSaved
-                                        ? "✓ Saved in Vocabulary"
-                                        : savingWord
-                                        ? "Saving..."
-                                        : "⭐ Save Word"}
+                                    {isWordSaved ? (
+                                        <>
+                                            <span>✓</span>
+                                            <span>Saved in Vocabulary</span>
+                                        </>
+                                    ) : savingWord ? (
+                                        <>
+                                            <span className="btn-spinner" />
+                                            <span>Saving...</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <span>⭐</span>
+                                            <span>Save Word</span>
+                                        </>
+                                    )}
                                 </button>
                             </div>
                         </>

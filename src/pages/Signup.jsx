@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { signup } from "../services/api";
 
@@ -14,6 +14,13 @@ function Signup() {
 
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
+
+    // Redirect to reader if already logged in
+    useEffect(() => {
+        if (localStorage.getItem("token")) {
+            navigate("/reader", { replace: true });
+        }
+    }, [navigate]);
 
     const handleChange = (e) => {
         const { id, value } = e.target;
@@ -96,55 +103,72 @@ function Signup() {
 
                 <div className="auth-heading">
                     <h2>Create your account</h2>
-                    <p>Start learning while you read.</p>
+                    <p>Start learning vocabulary while you read.</p>
                 </div>
 
-                {error && <div className="auth-error">{error}</div>}
+                {error && (
+                    <div className="auth-error" role="alert">
+                        <span className="auth-error-icon">⚠️</span>
+                        <span>{error}</span>
+                    </div>
+                )}
 
-                <form onSubmit={handleSubmit}>
+                <form onSubmit={handleSubmit} noValidate>
                     <div className="form-group">
-                        <label htmlFor="name">Name</label>
+                        <label htmlFor="name">Full Name</label>
                         <input
                             id="name"
                             type="text"
-                            placeholder="Your name"
+                            placeholder="e.g. Jane Doe"
+                            autoComplete="name"
                             value={formData.name}
                             onChange={handleChange}
+                            disabled={loading}
+                            required
                         />
                     </div>
 
                     <div className="form-group">
-                        <label htmlFor="email">Email</label>
+                        <label htmlFor="email">Email Address</label>
                         <input
                             id="email"
                             type="email"
                             placeholder="you@example.com"
+                            autoComplete="email"
                             value={formData.email}
                             onChange={handleChange}
+                            disabled={loading}
+                            required
                         />
                     </div>
 
                     <div className="form-group">
-                        <label htmlFor="password">Password</label>
+                        <label htmlFor="password">Password (min 6 characters)</label>
                         <input
                             id="password"
                             type="password"
-                            placeholder="Create a password"
+                            placeholder="Create a secure password"
+                            autoComplete="new-password"
                             value={formData.password}
                             onChange={handleChange}
+                            disabled={loading}
+                            required
                         />
                     </div>
 
                     <div className="form-group">
                         <label htmlFor="confirmPassword">
-                            Confirm password
+                            Confirm Password
                         </label>
                         <input
                             id="confirmPassword"
                             type="password"
-                            placeholder="Confirm your password"
+                            placeholder="Repeat password"
+                            autoComplete="new-password"
                             value={formData.confirmPassword}
                             onChange={handleChange}
+                            disabled={loading}
+                            required
                         />
                     </div>
 
@@ -153,13 +177,20 @@ function Signup() {
                         className="auth-button"
                         disabled={loading}
                     >
-                        {loading ? "Creating Account..." : "Create Account"}
+                        {loading ? (
+                            <span className="btn-loading-wrapper">
+                                <span className="btn-spinner" />
+                                <span>Creating Account...</span>
+                            </span>
+                        ) : (
+                            "Create Account"
+                        )}
                     </button>
                 </form>
 
                 <p className="auth-footer">
                     Already have an account?{" "}
-                    <Link to="/login">Login</Link>
+                    <Link to="/login">Log In</Link>
                 </p>
             </div>
         </div>
