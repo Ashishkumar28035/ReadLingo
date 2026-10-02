@@ -190,13 +190,58 @@ function Reader() {
         return bRect;
     };
 
+    // References for latest-request and closing protection
+    const abortControllerRef = useRef(null);
+    const latestRequestIdRef = useRef(0);
+    const isClosingRef = useRef(false);
+    const closingTimeoutRef = useRef(null);
+
+    // Close popup: resets all state, clears selection, and aborts pending lookups
+    const closePopup = useCallback(() => {
+        isClosingRef.current = true;
+        if (closingTimeoutRef.current) {
+            clearTimeout(closingTimeoutRef.current);
+        }
+        closingTimeoutRef.current = setTimeout(() => {
+            isClosingRef.current = false;
+        }, 200);
+
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        latestRequestIdRef.current++;
+
+        try {
+            const selection = window.getSelection();
+            if (selection) {
+                selection.removeAllRanges();
+            }
+        } catch (e) {
+            console.warn("[ReadLingo] Error clearing text selection:", e);
+        }
+
+        setPopupVisible(false);
+        setSelectedWord("");
+        setWordData(null);
+        setPopupLoading(false);
+        setPopupError("");
+        setIsWordSaved(false);
+        setSavingWord(false);
+    }, []);
+
     // Detect user text selection on the PDF
     const handleSelection = useCallback(async () => {
+        if (isClosingRef.current) return;
+
         const selection = window.getSelection();
         if (!selection) return;
 
         if (selection.isCollapsed) {
-            // Empty click / collapsed selection: do not trigger popup
+            // Clicking empty area closes popup if open
+            if (popupVisible) {
+                closePopup();
+            }
             return;
         }
 
@@ -210,6 +255,11 @@ function Reader() {
         const targetElement = containerNode.nodeType === Node.ELEMENT_NODE
             ? containerNode
             : containerNode.parentElement;
+
+        // Never trigger selection from inside the popup
+        if (targetElement?.closest(".word-popup")) {
+            return;
+        }
 
         // Verify selection is inside PDF TextLayer or PDF reader page
         if (!targetElement?.closest(".textLayer") && !targetElement?.closest(".pdf-page-wrapper")) {
@@ -226,20 +276,12 @@ function Reader() {
         // Must be a single English word (letters, optional internal apostrophe or hyphen)
         const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleaned);
 
-        console.log("[ReadLingo WordSelection] Raw text:", JSON.stringify(rawText));
-        console.log("[ReadLingo WordSelection] Cleaned word:", JSON.stringify(cleaned));
-        console.log("[ReadLingo WordSelection] Selected element:", targetElement);
-        console.log("[ReadLingo WordSelection] Selection range:", range);
-        console.log("[ReadLingo WordSelection] isSingleWord:", isSingleWord);
-
         if (!isSingleWord || cleaned.length < 1) {
             console.log("[ReadLingo WordSelection] Rejected: Not a single English word.");
             return;
         }
 
         const rect = getSelectionRect(range);
-        console.log("[ReadLingo WordSelection] Bounding rectangle:", rect);
-
         if (!rect) {
             console.warn("[ReadLingo WordSelection] No valid rect found.");
             return;
@@ -254,8 +296,7 @@ function Reader() {
             top = rect.top - 280;
         }
 
-        console.log("[ReadLingo WordSelection] Showing popup at pos:", { top, left, word: cleaned });
-
+        // 1. Show popup immediately with selected word and loading state
         setSelectedWord(cleaned);
         setPopupPos({ top, left });
         setPopupVisible(true);
@@ -264,30 +305,50 @@ function Reader() {
         setWordData(null);
         setIsWordSaved(false);
 
+        // 2. Abort prior pending request and track latest request ID
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+        }
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+        const currentReqId = ++latestRequestIdRef.current;
+
         try {
-            const data = await lookupWord(cleaned);
-            console.log("[ReadLingo WordSelection] Lookup result received:", data);
+            const data = await lookupWord(cleaned, { signal: controller.signal });
+            // Guard: Ignore if a newer request was dispatched
+            if (latestRequestIdRef.current !== currentReqId) {
+                return;
+            }
             setWordData(data);
+            setPopupLoading(false);
 
             // Check if user already saved this word
             try {
-                const checkRes = await checkVocabularySaved(cleaned);
-                setIsWordSaved(checkRes.isSaved);
+                const checkRes = await checkVocabularySaved(cleaned, { signal: controller.signal });
+                if (latestRequestIdRef.current === currentReqId) {
+                    setIsWordSaved(Boolean(checkRes?.isSaved));
+                }
             } catch {
                 // Ignore background check failure
             }
         } catch (err) {
+            if (err.name === "AbortError" || latestRequestIdRef.current !== currentReqId) {
+                return;
+            }
             console.error("[ReadLingo WordSelection] Lookup error:", err);
             setPopupError(err.message || "Could not find word details");
-        } finally {
             setPopupLoading(false);
         }
-    }, []);
+    }, [popupVisible, closePopup]);
 
-    // Document-level mouseup listener ensures selection is always captured
+    // Document-level mouseup listener ensures selection is captured
     useEffect(() => {
-        const onMouseUp = () => {
-            // Small timeout allows browser selection range to finalize
+        const onMouseUp = (e) => {
+            // Ignore mouseup inside the popup
+            if (popupRef.current && popupRef.current.contains(e.target)) {
+                return;
+            }
+            if (isClosingRef.current) return;
             setTimeout(handleSelection, 20);
         };
 
@@ -296,6 +357,44 @@ function Reader() {
             document.removeEventListener("mouseup", onMouseUp);
         };
     }, [handleSelection]);
+
+    // Close popup on Escape key press
+    useEffect(() => {
+        const handleKeyDown = (e) => {
+            if (e.key === "Escape" && popupVisible) {
+                closePopup();
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => {
+            window.removeEventListener("keydown", handleKeyDown);
+        };
+    }, [popupVisible, closePopup]);
+
+    // Close popup on outside click
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (popupRef.current && !popupRef.current.contains(e.target)) {
+                // If clicked outside on header, toolbar, or non-text areas
+                if (
+                    e.target.closest(".reader-header") ||
+                    e.target.closest(".reader-toolbar") ||
+                    e.target.closest(".upload-card") ||
+                    !e.target.closest(".textLayer")
+                ) {
+                    closePopup();
+                }
+            }
+        };
+
+        if (popupVisible) {
+            document.addEventListener("mousedown", handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [popupVisible, closePopup]);
 
     // Save Word handler: User must explicitly click 'Save Word'
     const handleSaveWord = async () => {
@@ -317,24 +416,6 @@ function Reader() {
             setSavingWord(false);
         }
     };
-
-    // Close popup on outside click
-    useEffect(() => {
-        const handleClickOutside = (e) => {
-            if (popupRef.current && !popupRef.current.contains(e.target)) {
-                // If clicked outside popup, close it
-                setPopupVisible(false);
-            }
-        };
-
-        if (popupVisible) {
-            document.addEventListener("mousedown", handleClickOutside);
-        }
-
-        return () => {
-            document.removeEventListener("mousedown", handleClickOutside);
-        };
-    }, [popupVisible]);
 
     const handlePrevPage = () => {
         if (currentPage > 1) {
@@ -537,7 +618,13 @@ function Reader() {
                         <button
                             type="button"
                             className="popup-close-btn"
-                            onClick={() => setPopupVisible(false)}
+                            onMouseDown={(e) => {
+                                e.stopPropagation();
+                            }}
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                closePopup();
+                            }}
                             title="Close"
                         >
                             ✕
@@ -546,7 +633,7 @@ function Reader() {
 
                     {popupLoading && (
                         <div style={{ padding: "20px 0", textAlign: "center", color: "#777", fontSize: "14px" }}>
-                            Looking up meaning...
+                            Loading meaning...
                         </div>
                     )}
 
@@ -558,27 +645,30 @@ function Reader() {
 
                     {wordData && !popupLoading && (
                         <>
-                            {/* Hindi Meaning */}
-                            <div className="popup-hindi-badge">
-                                <span>🇮🇳</span>
-                                <span>{wordData.hindiMeaning}</span>
-                            </div>
+                            {/* Hindi Meaning (displays pure Hindi translation without artifacts) */}
+                            {wordData.hindiMeaning && (
+                                <div className="popup-hindi-badge">
+                                    <span>{wordData.hindiMeaning}</span>
+                                </div>
+                            )}
 
                             {/* English Definition */}
                             <div className="popup-section">
                                 <div className="popup-section-label">Definition</div>
-                                <div className="popup-definition">{wordData.definition}</div>
+                                <div className="popup-definition">
+                                    {wordData.definition || "Definition not available."}
+                                </div>
                             </div>
 
                             {/* Example Sentence */}
-                            {wordData.exampleSentence && (
-                                <div className="popup-section">
-                                    <div className="popup-section-label">Example</div>
-                                    <div className="popup-example">
-                                        “{wordData.exampleSentence}”
-                                    </div>
+                            <div className="popup-section">
+                                <div className="popup-section-label">Example</div>
+                                <div className="popup-example">
+                                    {wordData.exampleSentence && wordData.exampleSentence !== "Example not available."
+                                        ? `“${wordData.exampleSentence}”`
+                                        : "Example not available."}
                                 </div>
-                            )}
+                            </div>
 
                             {/* Save Word Button (Only saves when user clicks) */}
                             <div className="popup-footer">

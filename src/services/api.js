@@ -42,9 +42,10 @@ export function getMe() {
     });
 }
 
-export function lookupWord(word) {
+export function lookupWord(word, options = {}) {
     return request(`/words/lookup?word=${encodeURIComponent(word)}`, {
         method: "GET",
+        ...options,
     });
 }
 
@@ -67,8 +68,9 @@ export function deleteVocabulary(id) {
     });
 }
 
-export function checkVocabularySaved(word) {
+export function checkVocabularySaved(word, options = {}) {
     return request(`/vocabulary/check?word=${encodeURIComponent(word)}`, {
         method: "GET",
+        ...options,
     });
 }
