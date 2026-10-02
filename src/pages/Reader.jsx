@@ -1,0 +1,606 @@
+import { useState, useRef, useEffect, useCallback } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import * as pdfjsLib from "pdfjs-dist";
+import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import "pdfjs-dist/web/pdf_viewer.css";
+import { lookupWord, saveVocabulary, checkVocabularySaved } from "../services/api";
+
+// Set worker source using Vite's URL import
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+
+function Reader() {
+    const navigate = useNavigate();
+    const fileInputRef = useRef(null);
+    const canvasRef = useRef(null);
+    const textLayerRef = useRef(null);
+    const renderTaskRef = useRef(null);
+    const popupRef = useRef(null);
+
+    const [pdfDoc, setPdfDoc] = useState(null);
+    const [bookTitle, setBookTitle] = useState("");
+    const [currentPage, setCurrentPage] = useState(1);
+    const [totalPages, setTotalPages] = useState(0);
+    const [scale, setScale] = useState(1.2);
+    const [pageDimensions, setPageDimensions] = useState({ width: 0, height: 0 });
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+
+    // Word Popup State
+    const [popupVisible, setPopupVisible] = useState(false);
+    const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
+    const [selectedWord, setSelectedWord] = useState("");
+    const [wordData, setWordData] = useState(null);
+    const [popupLoading, setPopupLoading] = useState(false);
+    const [popupError, setPopupError] = useState("");
+    const [isWordSaved, setIsWordSaved] = useState(false);
+    const [savingWord, setSavingWord] = useState(false);
+
+    const handleLogout = () => {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        navigate("/login");
+    };
+
+    const handleFileSelect = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        // Validation: Accept only PDF
+        if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+            setError("Please upload a valid PDF file (.pdf)");
+            return;
+        }
+
+        try {
+            setError("");
+            setLoading(true);
+            setBookTitle(file.name);
+            setPopupVisible(false);
+
+            const arrayBuffer = await file.arrayBuffer();
+            const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+            const doc = await loadingTask.promise;
+
+            console.log("[ReadLingo] PDF loaded successfully, total pages:", doc.numPages);
+            setPdfDoc(doc);
+            setTotalPages(doc.numPages);
+            setCurrentPage(1);
+        } catch (err) {
+            console.error("[ReadLingo] Error loading PDF:", err);
+            setError("Failed to load PDF. Please try a different document.");
+            setPdfDoc(null);
+        } finally {
+            setLoading(false);
+            if (fileInputRef.current) {
+                fileInputRef.current.value = "";
+            }
+        }
+    };
+
+    // Render the current page on canvas + textLayer
+    useEffect(() => {
+        let isCancelled = false;
+
+        const renderPage = async () => {
+            if (!pdfDoc || !canvasRef.current) return;
+
+            try {
+                // Cancel any ongoing render task before starting a new one
+                if (renderTaskRef.current) {
+                    await renderTaskRef.current.cancel();
+                    renderTaskRef.current = null;
+                }
+
+                const page = await pdfDoc.getPage(currentPage);
+                if (isCancelled) return;
+
+                const viewport = page.getViewport({ scale });
+                setPageDimensions({ width: viewport.width, height: viewport.height });
+
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+
+                const context = canvas.getContext("2d");
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: context,
+                    viewport,
+                };
+
+                const renderTask = page.render(renderContext);
+                renderTaskRef.current = renderTask;
+                await renderTask.promise;
+
+                if (isCancelled) return;
+
+                // Render TextLayer for selectable text
+                if (textLayerRef.current) {
+                    const textLayerDiv = textLayerRef.current;
+                    textLayerDiv.innerHTML = "";
+                    textLayerDiv.style.width = `${Math.floor(viewport.width)}px`;
+                    textLayerDiv.style.height = `${Math.floor(viewport.height)}px`;
+                    textLayerDiv.style.setProperty("--total-scale-factor", viewport.scale);
+                    textLayerDiv.style.setProperty("--scale-factor", viewport.scale);
+
+                    const textContent = await page.getTextContent();
+                    if (isCancelled) return;
+
+                    console.log("[ReadLingo] Rendering TextLayer with items count:", textContent.items.length);
+
+                    const textLayer = new pdfjsLib.TextLayer({
+                        textContentSource: textContent,
+                        container: textLayerDiv,
+                        viewport,
+                    });
+
+                    await textLayer.render();
+                    console.log("[ReadLingo] TextLayer rendered successfully. Spans count:", textLayerDiv.children.length);
+                }
+            } catch (err) {
+                if (err?.name !== "RenderingCancelledException") {
+                    console.error("[ReadLingo] Render error:", err);
+                }
+            }
+        };
+
+        renderPage();
+
+        return () => {
+            isCancelled = true;
+            if (renderTaskRef.current) {
+                renderTaskRef.current.cancel();
+                renderTaskRef.current = null;
+            }
+        };
+    }, [pdfDoc, currentPage, scale]);
+
+    // Helper to extract reliable bounding rectangle
+    const getSelectionRect = (range) => {
+        if (!range) return null;
+
+        // 1. Try client rects
+        const clientRects = range.getClientRects();
+        for (let i = 0; i < clientRects.length; i++) {
+            const r = clientRects[i];
+            if (r.width > 0 && r.height > 0) {
+                return r;
+            }
+        }
+
+        // 2. Try bounding client rect
+        const bRect = range.getBoundingClientRect();
+        if (bRect && (bRect.width > 0 || bRect.height > 0)) {
+            return bRect;
+        }
+
+        // 3. Fallback to commonAncestorContainer element
+        let elem = range.commonAncestorContainer;
+        if (elem?.nodeType === Node.TEXT_NODE) {
+            elem = elem.parentElement;
+        }
+        if (elem?.getBoundingClientRect) {
+            const elemRect = elem.getBoundingClientRect();
+            if (elemRect.width > 0 || elemRect.height > 0) {
+                return elemRect;
+            }
+        }
+
+        return bRect;
+    };
+
+    // Detect user text selection on the PDF
+    const handleSelection = useCallback(async () => {
+        const selection = window.getSelection();
+        if (!selection) return;
+
+        if (selection.isCollapsed) {
+            // Empty click / collapsed selection: do not trigger popup
+            return;
+        }
+
+        const rawText = selection.toString();
+        if (!rawText || !rawText.trim()) return;
+
+        const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+        if (!range) return;
+
+        const containerNode = range.commonAncestorContainer;
+        const targetElement = containerNode.nodeType === Node.ELEMENT_NODE
+            ? containerNode
+            : containerNode.parentElement;
+
+        // Verify selection is inside PDF TextLayer or PDF reader page
+        if (!targetElement?.closest(".textLayer") && !targetElement?.closest(".pdf-page-wrapper")) {
+            console.log("[ReadLingo WordSelection] Selection outside PDF textLayer, ignoring.");
+            return;
+        }
+
+        // Clean invisible/zero-width chars, soft hyphens, and edge punctuation
+        const sanitized = rawText.replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "").trim();
+        const cleaned = sanitized
+            .replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, "")
+            .trim();
+
+        // Must be a single English word (letters, optional internal apostrophe or hyphen)
+        const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleaned);
+
+        console.log("[ReadLingo WordSelection] Raw text:", JSON.stringify(rawText));
+        console.log("[ReadLingo WordSelection] Cleaned word:", JSON.stringify(cleaned));
+        console.log("[ReadLingo WordSelection] Selected element:", targetElement);
+        console.log("[ReadLingo WordSelection] Selection range:", range);
+        console.log("[ReadLingo WordSelection] isSingleWord:", isSingleWord);
+
+        if (!isSingleWord || cleaned.length < 1) {
+            console.log("[ReadLingo WordSelection] Rejected: Not a single English word.");
+            return;
+        }
+
+        const rect = getSelectionRect(range);
+        console.log("[ReadLingo WordSelection] Bounding rectangle:", rect);
+
+        if (!rect) {
+            console.warn("[ReadLingo WordSelection] No valid rect found.");
+            return;
+        }
+
+        const popupWidth = 320;
+        let left = rect.left + rect.width / 2 - popupWidth / 2;
+        left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
+
+        let top = rect.bottom + 8;
+        if (top + 280 > window.innerHeight && rect.top > 280) {
+            top = rect.top - 280;
+        }
+
+        console.log("[ReadLingo WordSelection] Showing popup at pos:", { top, left, word: cleaned });
+
+        setSelectedWord(cleaned);
+        setPopupPos({ top, left });
+        setPopupVisible(true);
+        setPopupLoading(true);
+        setPopupError("");
+        setWordData(null);
+        setIsWordSaved(false);
+
+        try {
+            const data = await lookupWord(cleaned);
+            console.log("[ReadLingo WordSelection] Lookup result received:", data);
+            setWordData(data);
+
+            // Check if user already saved this word
+            try {
+                const checkRes = await checkVocabularySaved(cleaned);
+                setIsWordSaved(checkRes.isSaved);
+            } catch {
+                // Ignore background check failure
+            }
+        } catch (err) {
+            console.error("[ReadLingo WordSelection] Lookup error:", err);
+            setPopupError(err.message || "Could not find word details");
+        } finally {
+            setPopupLoading(false);
+        }
+    }, []);
+
+    // Document-level mouseup listener ensures selection is always captured
+    useEffect(() => {
+        const onMouseUp = () => {
+            // Small timeout allows browser selection range to finalize
+            setTimeout(handleSelection, 20);
+        };
+
+        document.addEventListener("mouseup", onMouseUp);
+        return () => {
+            document.removeEventListener("mouseup", onMouseUp);
+        };
+    }, [handleSelection]);
+
+    // Save Word handler: User must explicitly click 'Save Word'
+    const handleSaveWord = async () => {
+        if (!wordData || isWordSaved || savingWord) return;
+
+        try {
+            setSavingWord(true);
+            await saveVocabulary({
+                word: wordData.word,
+                definition: wordData.definition,
+                hindiMeaning: wordData.hindiMeaning,
+                exampleSentence: wordData.exampleSentence,
+                phonetic: wordData.phonetic,
+            });
+            setIsWordSaved(true);
+        } catch (err) {
+            setPopupError(err.message || "Failed to save word");
+        } finally {
+            setSavingWord(false);
+        }
+    };
+
+    // Close popup on outside click
+    useEffect(() => {
+        const handleClickOutside = (e) => {
+            if (popupRef.current && !popupRef.current.contains(e.target)) {
+                // If clicked outside popup, close it
+                setPopupVisible(false);
+            }
+        };
+
+        if (popupVisible) {
+            document.addEventListener("mousedown", handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [popupVisible]);
+
+    const handlePrevPage = () => {
+        if (currentPage > 1) {
+            setPopupVisible(false);
+            setCurrentPage((prev) => prev - 1);
+        }
+    };
+
+    const handleNextPage = () => {
+        if (currentPage < totalPages) {
+            setPopupVisible(false);
+            setCurrentPage((prev) => prev + 1);
+        }
+    };
+
+    const handleZoomIn = () => {
+        setPopupVisible(false);
+        setScale((prev) => Math.min(Number((prev + 0.2).toFixed(1)), 3.0));
+    };
+
+    const handleZoomOut = () => {
+        setPopupVisible(false);
+        setScale((prev) => Math.max(Number((prev - 0.2).toFixed(1)), 0.6));
+    };
+
+    const handleResetZoom = () => {
+        setPopupVisible(false);
+        setScale(1.2);
+    };
+
+    return (
+        <div className="reader-page">
+            {/* Top Navigation */}
+            <header className="reader-header">
+                <Link to="/reader" className="reader-brand">
+                    <span>📖</span>
+                    <span>ReadLingo</span>
+                </Link>
+
+                {bookTitle && (
+                    <div className="reader-book-title" title={bookTitle}>
+                        {bookTitle}
+                    </div>
+                )}
+
+                <div className="reader-actions">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="application/pdf"
+                        onChange={handleFileSelect}
+                        style={{ display: "none" }}
+                    />
+                    <button
+                        type="button"
+                        className="reader-btn-primary"
+                        onClick={() => fileInputRef.current?.click()}
+                    >
+                        {pdfDoc ? "Upload Another PDF" : "Upload PDF"}
+                    </button>
+
+                    <Link to="/vocabulary" className="reader-btn-secondary">
+                        Vocabulary
+                    </Link>
+
+                    <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="reader-btn-secondary"
+                    >
+                        Logout
+                    </button>
+                </div>
+            </header>
+
+            {/* Error Message */}
+            {error && (
+                <div style={{ padding: "16px 24px 0", maxWidth: "600px", margin: "0 auto" }}>
+                    <div className="auth-error">{error}</div>
+                </div>
+            )}
+
+            {/* Reader Toolbar (Visible when PDF is loaded) */}
+            {pdfDoc && (
+                <div className="reader-toolbar">
+                    {/* Page Navigation */}
+                    <div className="toolbar-group">
+                        <button
+                            type="button"
+                            className="toolbar-btn"
+                            onClick={handlePrevPage}
+                            disabled={currentPage <= 1}
+                        >
+                            ◀ Previous
+                        </button>
+                        <span className="toolbar-info">
+                            Page {currentPage} of {totalPages}
+                        </span>
+                        <button
+                            type="button"
+                            className="toolbar-btn"
+                            onClick={handleNextPage}
+                            disabled={currentPage >= totalPages}
+                        >
+                            Next ▶
+                        </button>
+                    </div>
+
+                    {/* Zoom Controls */}
+                    <div className="toolbar-group">
+                        <button
+                            type="button"
+                            className="toolbar-btn"
+                            onClick={handleZoomOut}
+                            disabled={scale <= 0.6}
+                            title="Zoom Out"
+                        >
+                            − Zoom
+                        </button>
+                        <span className="toolbar-info">
+                            {Math.round(scale * 100)}%
+                        </span>
+                        <button
+                            type="button"
+                            className="toolbar-btn"
+                            onClick={handleZoomIn}
+                            disabled={scale >= 3.0}
+                            title="Zoom In"
+                        >
+                            + Zoom
+                        </button>
+                        <button
+                            type="button"
+                            className="toolbar-btn"
+                            onClick={handleResetZoom}
+                            title="Reset Zoom"
+                        >
+                            Reset
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Reader Main Content */}
+            <main className="reader-content">
+                {loading && (
+                    <div style={{ textAlign: "center", padding: "60px 0", color: "#666" }}>
+                        Loading PDF document...
+                    </div>
+                )}
+
+                {!pdfDoc && !loading && (
+                    <div className="upload-card">
+                        <div className="upload-card-icon">📄</div>
+                        <h3>No Book Open</h3>
+                        <p>Upload any English PDF book to start reading and learning.</p>
+                        <button
+                            type="button"
+                            className="reader-btn-primary"
+                            onClick={() => fileInputRef.current?.click()}
+                        >
+                            Choose PDF File
+                        </button>
+                    </div>
+                )}
+
+                {pdfDoc && !loading && (
+                    <div
+                        className="pdf-page-wrapper"
+                        style={{
+                            width: pageDimensions.width ? `${Math.floor(pageDimensions.width)}px` : "auto",
+                            height: pageDimensions.height ? `${Math.floor(pageDimensions.height)}px` : "auto",
+                        }}
+                    >
+                        <canvas ref={canvasRef} />
+                        <div ref={textLayerRef} className="textLayer" />
+                    </div>
+                )}
+            </main>
+
+            {/* Contextual Word Popup */}
+            {popupVisible && (
+                <div
+                    ref={popupRef}
+                    className="word-popup"
+                    style={{
+                        position: "fixed",
+                        top: `${popupPos.top}px`,
+                        left: `${popupPos.left}px`,
+                        zIndex: 99999,
+                    }}
+                >
+                    <div className="popup-header">
+                        <div className="popup-word-title">
+                            <span>{wordData?.word || selectedWord}</span>
+                            {wordData?.phonetic && (
+                                <span className="popup-phonetic">{wordData.phonetic}</span>
+                            )}
+                        </div>
+                        <button
+                            type="button"
+                            className="popup-close-btn"
+                            onClick={() => setPopupVisible(false)}
+                            title="Close"
+                        >
+                            ✕
+                        </button>
+                    </div>
+
+                    {popupLoading && (
+                        <div style={{ padding: "20px 0", textAlign: "center", color: "#777", fontSize: "14px" }}>
+                            Looking up meaning...
+                        </div>
+                    )}
+
+                    {popupError && (
+                        <div className="auth-error" style={{ marginBottom: "12px", fontSize: "13px" }}>
+                            {popupError}
+                        </div>
+                    )}
+
+                    {wordData && !popupLoading && (
+                        <>
+                            {/* Hindi Meaning */}
+                            <div className="popup-hindi-badge">
+                                <span>🇮🇳</span>
+                                <span>{wordData.hindiMeaning}</span>
+                            </div>
+
+                            {/* English Definition */}
+                            <div className="popup-section">
+                                <div className="popup-section-label">Definition</div>
+                                <div className="popup-definition">{wordData.definition}</div>
+                            </div>
+
+                            {/* Example Sentence */}
+                            {wordData.exampleSentence && (
+                                <div className="popup-section">
+                                    <div className="popup-section-label">Example</div>
+                                    <div className="popup-example">
+                                        “{wordData.exampleSentence}”
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Save Word Button (Only saves when user clicks) */}
+                            <div className="popup-footer">
+                                <button
+                                    type="button"
+                                    className={`popup-save-btn ${isWordSaved ? "saved" : ""}`}
+                                    onClick={handleSaveWord}
+                                    disabled={savingWord || isWordSaved}
+                                >
+                                    {isWordSaved
+                                        ? "✓ Saved in Vocabulary"
+                                        : savingWord
+                                        ? "Saving..."
+                                        : "⭐ Save Word"}
+                                </button>
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+export default Reader;
