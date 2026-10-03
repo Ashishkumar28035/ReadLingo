@@ -2,6 +2,33 @@ import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { getVocabulary, deleteVocabulary } from "../services/api";
 
+function formatDisplayText(text) {
+    if (!text || typeof text !== "string") return "";
+    return text
+        .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+        .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+        .replace(/\.mw-parser-output[^{}]*\{[^}]*\}/gi, "")
+        .replace(/\{[a-zA-Z\-_\s]+:[^}]+\}/gi, "")
+        .replace(/\.defdate\s*\{[^}]*\}/gi, "")
+        .replace(/\.mw-[a-zA-Z0-9_-]+/gi, "")
+        .replace(/<[^>]+>/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+function formatDisplayHindi(raw, term = "") {
+    if (!raw || typeof raw !== "string") return "";
+    let str = formatDisplayText(raw);
+    if (/[\u0900-\u097F]/.test(str)) {
+        str = str.replace(/([\u0900-\u097F])[a-zA-Z].*$/, "$1");
+        str = str.replace(/[a-zA-Z0-9_\-.:#@]+/g, "");
+        str = str.replace(/\(\s*\)/g, "").replace(/\[\s*\]/g, "");
+        str = str.replace(/^[\s,./|\-–—:]+|[\s,./|\-–—:]+$/g, "").trim();
+    }
+    if (term && str.toLowerCase() === term.toLowerCase()) return "";
+    return str;
+}
+
 function Vocabulary() {
     const navigate = useNavigate();
     const [words, setWords] = useState([]);
@@ -197,24 +224,33 @@ function Vocabulary() {
                                         </button>
                                     </div>
 
-                                    {item.hindiMeaning && (
-                                        <div className="vocab-hindi-pill">
-                                            <span className="vocab-hindi-label">Hindi:</span>
-                                            <span>{item.hindiMeaning}</span>
-                                        </div>
-                                    )}
+                                    {(() => {
+                                        const cleanHindi = formatDisplayHindi(item.hindiMeaning, item.word);
+                                        return cleanHindi ? (
+                                            <div className="vocab-hindi-pill">
+                                                <span className="vocab-hindi-label">Hindi:</span>
+                                                <span>{cleanHindi}</span>
+                                            </div>
+                                        ) : null;
+                                    })()}
 
-                                    {item.definition && (
-                                        <div className="vocab-definition">
-                                            {item.definition}
-                                        </div>
-                                    )}
+                                    {(() => {
+                                        const cleanDef = formatDisplayText(item.definition);
+                                        return cleanDef ? (
+                                            <div className="vocab-definition">
+                                                {cleanDef}
+                                            </div>
+                                        ) : null;
+                                    })()}
 
-                                    {item.exampleSentence && (
-                                        <div className="vocab-example">
-                                            “{item.exampleSentence}”
-                                        </div>
-                                    )}
+                                    {(() => {
+                                        const cleanEx = formatDisplayText(item.exampleSentence);
+                                        return cleanEx ? (
+                                            <div className="vocab-example">
+                                                “{cleanEx}”
+                                            </div>
+                                        ) : null;
+                                    })()}
                                 </div>
                             );
                         })}

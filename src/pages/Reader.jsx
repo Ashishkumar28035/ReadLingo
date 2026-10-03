@@ -43,6 +43,19 @@ function Reader() {
         navigate("/login");
     };
 
+    const pdfDocRef = useRef(null);
+    useEffect(() => {
+        pdfDocRef.current = pdfDoc;
+    }, [pdfDoc]);
+
+    useEffect(() => {
+        return () => {
+            if (pdfDocRef.current) {
+                pdfDocRef.current.destroy().catch(() => {});
+            }
+        };
+    }, []);
+
     const loadPdfFile = async (file) => {
         if (!file) return;
 
@@ -52,11 +65,26 @@ function Reader() {
             return;
         }
 
+        if (file.size === 0) {
+            setError("The selected PDF file is empty (0 bytes).");
+            return;
+        }
+
+        if (file.size > 50 * 1024 * 1024) {
+            setError("PDF file exceeds the 50MB browser memory limit. Please upload a smaller file.");
+            return;
+        }
+
         try {
             setError("");
             setLoading(true);
             setBookTitle(file.name);
             setPopupVisible(false);
+
+            // Clean up any previously loaded PDF to free memory
+            if (pdfDoc) {
+                pdfDoc.destroy().catch(() => {});
+            }
 
             const arrayBuffer = await file.arrayBuffer();
             const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
@@ -282,8 +310,8 @@ function Reader() {
         // Must be a single English word (letters, optional internal apostrophe or hyphen)
         const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleaned);
 
-        if (!isSingleWord || cleaned.length < 1) {
-            console.log("[ReadLingo WordSelection] Rejected: Not a single English word.");
+        if (!isSingleWord || cleaned.length < 1 || cleaned.length > 45) {
+            console.log("[ReadLingo WordSelection] Rejected: Not a valid single English word (1-45 chars).");
             return;
         }
 
@@ -616,7 +644,7 @@ function Reader() {
                         <div className="upload-card-icon">📖</div>
                         <h3>Upload an English Book or PDF</h3>
                         <p>
-                            Select or drop any PDF document here to start reading and translating unfamiliar words.
+                            Select or drop any PDF document here to start reading and translating unfamiliar words. Your PDF stays in your browser and isn't uploaded to our server.
                         </p>
                         <button
                             type="button"
@@ -627,7 +655,7 @@ function Reader() {
                             <span>Choose PDF File</span>
                         </button>
                         <div className="upload-card-badge">
-                            Client-Side Only • Private & Temporary
+                            🔒 Private • PDF is not uploaded
                         </div>
                     </div>
                 )}

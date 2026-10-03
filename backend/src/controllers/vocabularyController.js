@@ -1,4 +1,6 @@
+import mongoose from 'mongoose';
 import Vocabulary from '../models/Vocabulary.js';
+import { cleanEnglishText, cleanHindiText } from '../utils/sanitizer.js';
 
 // @desc    Save a word to user vocabulary
 // @route   POST /api/vocabulary
@@ -7,11 +9,15 @@ export const saveWord = async (req, res) => {
   try {
     const { word, definition, hindiMeaning, exampleSentence, phonetic } = req.body;
 
-    if (!word) {
+    if (!word || typeof word !== 'string') {
       return res.status(400).json({ message: 'Word is required' });
     }
 
     const cleanWord = word.trim().toLowerCase();
+
+    if (!cleanWord || cleanWord.length > 45) {
+      return res.status(400).json({ message: 'Word must be between 1 and 45 characters' });
+    }
 
     // Check if word already exists for this user
     const existingWord = await Vocabulary.findOne({
@@ -27,13 +33,18 @@ export const saveWord = async (req, res) => {
       });
     }
 
+    const cleanDef = cleanEnglishText(definition);
+    const cleanHindi = cleanHindiText(hindiMeaning, cleanWord);
+    const cleanEx = cleanEnglishText(exampleSentence);
+    const cleanPhonetic = cleanEnglishText(phonetic);
+
     const newWord = await Vocabulary.create({
       userId: req.user._id,
       word: cleanWord,
-      definition: definition || '',
-      hindiMeaning: hindiMeaning || '',
-      exampleSentence: exampleSentence || '',
-      phonetic: phonetic || '',
+      definition: cleanDef,
+      hindiMeaning: cleanHindi,
+      exampleSentence: cleanEx,
+      phonetic: cleanPhonetic,
     });
 
     res.status(201).json({
@@ -42,6 +53,19 @@ export const saveWord = async (req, res) => {
       vocabulary: newWord,
     });
   } catch (error) {
+    // Handle concurrent duplicate save requests cleanly
+    if (error.code === 11000) {
+      const existing = await Vocabulary.findOne({
+        userId: req.user._id,
+        word: req.body?.word?.trim()?.toLowerCase(),
+      });
+      return res.status(200).json({
+        message: 'Word is already saved in your vocabulary',
+        alreadySaved: true,
+        vocabulary: existing,
+      });
+    }
+
     console.error('Save word error:', error);
     res.status(500).json({ message: 'Failed to save word to vocabulary' });
   }
@@ -65,8 +89,14 @@ export const getSavedWords = async (req, res) => {
 // @access  Private
 export const deleteWord = async (req, res) => {
   try {
+    const { id } = req.params;
+
+    if (!id || !mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ message: 'Invalid vocabulary ID format' });
+    }
+
     const deleted = await Vocabulary.findOneAndDelete({
-      _id: req.params.id,
+      _id: id,
       userId: req.user._id,
     });
 
@@ -74,7 +104,7 @@ export const deleteWord = async (req, res) => {
       return res.status(404).json({ message: 'Word not found in your vocabulary' });
     }
 
-    res.json({ message: 'Word deleted successfully', id: req.params.id });
+    res.json({ message: 'Word deleted successfully', id });
   } catch (error) {
     console.error('Delete word error:', error);
     res.status(500).json({ message: 'Failed to delete word' });
@@ -87,11 +117,15 @@ export const deleteWord = async (req, res) => {
 export const checkWordSaved = async (req, res) => {
   try {
     const rawWord = req.query.word;
-    if (!rawWord) {
+    if (!rawWord || typeof rawWord !== 'string') {
       return res.status(400).json({ message: 'Word query is required' });
     }
 
     const cleanWord = rawWord.trim().toLowerCase();
+    if (!cleanWord || cleanWord.length > 45) {
+      return res.status(400).json({ message: 'Invalid word format' });
+    }
+
     const existing = await Vocabulary.findOne({
       userId: req.user._id,
       word: cleanWord,

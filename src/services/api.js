@@ -1,4 +1,4 @@
-const API_BASE_URL = "http://localhost:5000/api";
+const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 async function request(endpoint, options = {}) {
     const token = localStorage.getItem("token");
@@ -8,15 +8,23 @@ async function request(endpoint, options = {}) {
         ...(options.headers || {}),
     };
 
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-        ...options,
-        headers,
-    });
+    let response;
+    try {
+        response = await fetch(`${API_BASE_URL}${endpoint}`, {
+            ...options,
+            headers,
+        });
+    } catch (networkErr) {
+        if (networkErr.name === "AbortError") {
+            throw networkErr;
+        }
+        throw new Error("Unable to connect to ReadLingo server. Please check your connection.");
+    }
 
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
-        throw new Error(data.message || "Something went wrong");
+        throw new Error(data.message || `Request failed with status ${response.status}`);
     }
 
     return data;

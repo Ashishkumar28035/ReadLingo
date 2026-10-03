@@ -1,3 +1,5 @@
+import { cleanEnglishText, cleanHindiText } from '../utils/sanitizer.js';
+
 // In-memory cache for successful word lookups (normalizedWord -> { data, timestamp })
 const lookupCache = new Map();
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes TTL
@@ -83,20 +85,23 @@ async function fetchFreeDictionary(term) {
     // Safely iterate through all entries and meanings
     for (const entry of data) {
       if (!phonetic) {
-        phonetic = entry.phonetic || entry.phonetics?.find((p) => p.text && p.text.trim())?.text || '';
+        const rawPhonetic = entry.phonetic || entry.phonetics?.find((p) => p.text && p.text.trim())?.text || '';
+        phonetic = cleanEnglishText(rawPhonetic);
       }
       if (Array.isArray(entry.meanings)) {
         for (const m of entry.meanings) {
           if (!partOfSpeech && m.partOfSpeech) {
-            partOfSpeech = m.partOfSpeech;
+            partOfSpeech = cleanEnglishText(m.partOfSpeech).toLowerCase();
           }
           if (Array.isArray(m.definitions)) {
             for (const d of m.definitions) {
-              if (!definition && d?.definition && typeof d.definition === 'string' && d.definition.trim()) {
-                definition = d.definition.trim();
+              if (!definition && d?.definition && typeof d.definition === 'string') {
+                const cleanDef = cleanEnglishText(d.definition);
+                if (cleanDef) definition = cleanDef;
               }
-              if (!example && d?.example && typeof d.example === 'string' && d.example.trim()) {
-                example = d.example.trim();
+              if (!example && d?.example && typeof d.example === 'string') {
+                const cleanEx = cleanEnglishText(d.example);
+                if (cleanEx) example = cleanEx;
               }
               if (definition && example) break;
             }
@@ -137,23 +142,24 @@ async function fetchWiktionary(term) {
 
     for (const item of data.en) {
       if (!partOfSpeech && item.partOfSpeech) {
-        partOfSpeech = item.partOfSpeech.toLowerCase();
+        partOfSpeech = cleanEnglishText(item.partOfSpeech).toLowerCase();
       }
       if (Array.isArray(item.definitions)) {
         for (const d of item.definitions) {
           if (!definition && d.definition) {
-            const rawDef = d.definition.replace(/<[^>]+>/g, '').trim();
+            const rawDef = cleanEnglishText(d.definition);
             if (rawDef && !rawDef.toLowerCase().startsWith('misspelling')) {
               definition = rawDef;
             }
           }
           if (!example) {
             const rawEx =
-              d.parsedExamples?.[0]?.example?.replace(/<[^>]+>/g, '').trim() ||
-              d.examples?.[0]?.replace(/<[^>]+>/g, '').trim() ||
+              d.parsedExamples?.[0]?.example ||
+              d.examples?.[0] ||
               '';
-            if (rawEx) {
-              example = rawEx;
+            const cleanEx = cleanEnglishText(rawEx);
+            if (cleanEx) {
+              example = cleanEx;
             }
           }
           if (definition && example) break;
@@ -196,7 +202,7 @@ async function fetchDatamuseDefinition(term) {
           if (d && !d.startsWith('N\t')) {
             const parts = d.split('\t');
             const pos = parts[0] || '';
-            const defText = parts.slice(1).join('\t').trim();
+            const defText = cleanEnglishText(parts.slice(1).join('\t'));
             if (defText && !defText.toLowerCase().startsWith('misspelling')) {
               return {
                 definition: defText,
@@ -226,47 +232,63 @@ async function fetchHindiTranslation(term) {
     const data = await res.json().catch(() => null);
     if (!data) return '';
 
-    let trans = data.responseData?.translatedText || '';
+    const cleanCandidate = (text) => {
+      if (!text || typeof text !== 'string') return '';
+      if (text.includes('MYMEMORY WARNING:') || text.includes('QUERY LENGTH LIMIT')) return '';
+      return cleanHindiText(text, term);
+    };
 
-    // Ignore quota warning messages
-    if (typeof trans !== 'string' || trans.includes('MYMEMORY WARNING:') || trans.includes('QUERY LENGTH LIMIT')) {
-      trans = '';
+    let primaryTrans = cleanCandidate(data.responseData?.translatedText);
+    const primaryWordCount = primaryTrans ? primaryTrans.split(/\s+/).length : 0;
+    const primaryHasDevanagari = /[\u0900-\u097F]/.test(primaryTrans);
+
+    // If primary translation is concise (<= 3 words) and has Devanagari, use it
+    if (primaryTrans && primaryHasDevanagari && primaryWordCount <= 3) {
+      return primaryTrans;
     }
 
-    // Fallback to matches if responseData was empty
-    if (!trans && Array.isArray(data.matches)) {
+    // Otherwise, check matches for a clean, concise, high-quality translation
+    if (Array.isArray(data.matches)) {
+      const matchCandidates = [];
       for (const m of data.matches) {
-        if (
-          m.translation &&
-          typeof m.translation === 'string' &&
-          !m.translation.includes('MYMEMORY WARNING:') &&
-          m.translation.toLowerCase() !== term.toLowerCase()
-        ) {
-          trans = m.translation;
-          break;
+        if (!m.translation) continue;
+        const cleaned = cleanCandidate(m.translation);
+        if (!cleaned || !/[\u0900-\u097F]/.test(cleaned)) continue;
+
+        const q = Number(m.quality || 0);
+        const matchScore = Number(m.match || 0);
+        const wordCount = cleaned.split(/\s+/).length;
+
+        matchCandidates.push({
+          text: cleaned,
+          quality: q,
+          match: matchScore,
+          wordCount,
+        });
+      }
+
+      if (matchCandidates.length > 0) {
+        // Sort matches: prioritize concise word-level translations (<= 3 words), then quality + match score
+        matchCandidates.sort((a, b) => {
+          const aConcise = a.wordCount <= 3 ? 1 : 0;
+          const bConcise = b.wordCount <= 3 ? 1 : 0;
+          if (aConcise !== bConcise) return bConcise - aConcise;
+          return (b.quality + b.match * 50) - (a.quality + a.match * 50);
+        });
+
+        const bestMatch = matchCandidates[0];
+        if (bestMatch && bestMatch.quality > 0) {
+          return bestMatch.text;
         }
       }
     }
 
-    if (!trans) return '';
-
-    // Decode HTML entities
-    trans = trans
-      .replace(/&amp;/g, '&')
-      .replace(/&quot;/g, '"')
-      .replace(/&#39;/g, "'")
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>');
-
-    // Clean surrounding quotes
-    trans = trans.replace(/^["'“‘]+|["'”’]+$/g, '').trim();
-
-    // If translation is the raw English word, ignore
-    if (trans.toLowerCase() === term.toLowerCase()) {
-      return '';
+    // Fall back to primary if it had Devanagari even if longer
+    if (primaryTrans && primaryHasDevanagari) {
+      return primaryTrans;
     }
 
-    return trans;
+    return '';
   } catch {
     return '';
   }
@@ -287,8 +309,8 @@ export const lookupWord = async (req, res) => {
     const normalizedWord = rawWord.trim().toLowerCase();
     const word = normalizedWord.replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, '').trim();
 
-    if (!word || !/^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(word)) {
-      return res.status(400).json({ message: 'Please provide a valid single English word' });
+    if (!word || !/^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(word) || word.length > 45) {
+      return res.status(400).json({ message: 'Please provide a valid single English word (up to 45 characters)' });
     }
 
     // Check server-side in-memory cache first
@@ -351,11 +373,11 @@ export const lookupWord = async (req, res) => {
 
     const [dictData, rawHindi] = await Promise.all([dictPromise, transPromise]);
 
-    const definition = dictData?.definition?.trim() || 'Definition not available.';
-    const phonetic = dictData?.phonetic?.trim() || '';
-    const partOfSpeech = dictData?.partOfSpeech?.trim() || '';
-    const exampleSentence = dictData?.example?.trim() || 'Example not available.';
-    const hindiMeaning = rawHindi?.trim() || 'Translation not available.';
+    const definition = cleanEnglishText(dictData?.definition) || 'Definition not available.';
+    const phonetic = cleanEnglishText(dictData?.phonetic) || '';
+    const partOfSpeech = cleanEnglishText(dictData?.partOfSpeech) || '';
+    const exampleSentence = cleanEnglishText(dictData?.example) || 'Example not available.';
+    const hindiMeaning = cleanHindiText(rawHindi, word) || 'Translation not available.';
 
     const responsePayload = {
       word,
