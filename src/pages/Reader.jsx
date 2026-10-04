@@ -37,6 +37,11 @@ function Reader() {
 
     const [isDragging, setIsDragging] = useState(false);
 
+    const popupVisibleRef = useRef(popupVisible);
+    useEffect(() => {
+        popupVisibleRef.current = popupVisible;
+    }, [popupVisible]);
+
     const handleLogout = () => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
@@ -207,7 +212,7 @@ function Reader() {
     }, [pdfDoc, currentPage, scale]);
 
     // Helper to extract reliable bounding rectangle
-    const getSelectionRect = (range) => {
+    const getSelectionRect = (range, fallbackEl = null) => {
         if (!range) return null;
 
         // 1. Try client rects
@@ -225,7 +230,15 @@ function Reader() {
             return bRect;
         }
 
-        // 3. Fallback to commonAncestorContainer element
+        // 3. Fallback to start element (the specific text span)
+        if (fallbackEl?.getBoundingClientRect) {
+            const fRect = fallbackEl.getBoundingClientRect();
+            if (fRect.width > 0 || fRect.height > 0) {
+                return fRect;
+            }
+        }
+
+        // 4. Fallback to commonAncestorContainer element
         let elem = range.commonAncestorContainer;
         if (elem?.nodeType === Node.TEXT_NODE) {
             elem = elem.parentElement;
@@ -254,7 +267,7 @@ function Reader() {
         }
         closingTimeoutRef.current = setTimeout(() => {
             isClosingRef.current = false;
-        }, 200);
+        }, 100);
 
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
@@ -282,43 +295,63 @@ function Reader() {
 
     // Detect user text selection on the PDF
     const handleSelection = useCallback(async () => {
-        if (isClosingRef.current) return;
+        if (isClosingRef.current) {
+            return;
+        }
 
         const selection = window.getSelection();
-        if (!selection) return;
+        if (!selection) {
+            return;
+        }
 
         if (selection.isCollapsed) {
-            // Clicking empty area closes popup if open
-            if (popupVisible) {
+            if (popupVisibleRef.current) {
                 closePopup();
             }
             return;
         }
 
         const rawText = selection.toString();
-        if (!rawText || !rawText.trim()) return;
+        if (!rawText || !rawText.trim()) {
+            return;
+        }
 
         const range = selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
-        if (!range) return;
+        if (!range) {
+            return;
+        }
 
         const containerNode = range.commonAncestorContainer;
-        const targetElement = containerNode.nodeType === Node.ELEMENT_NODE
+        const startNode = range.startContainer;
+        const endNode = range.endContainer;
+        const startEl = startNode?.nodeType === Node.ELEMENT_NODE ? startNode : startNode?.parentElement;
+        const endEl = endNode?.nodeType === Node.ELEMENT_NODE ? endNode : endNode?.parentElement;
+        const targetElement = containerNode?.nodeType === Node.ELEMENT_NODE
             ? containerNode
-            : containerNode.parentElement;
+            : containerNode?.parentElement;
 
         // Never trigger selection from inside the popup
-        if (targetElement?.closest(".word-popup")) {
+        if (targetElement?.closest(".word-popup") || startEl?.closest(".word-popup")) {
             return;
         }
 
-        // Verify selection is inside PDF TextLayer or PDF reader page
-        if (!targetElement?.closest(".textLayer") && !targetElement?.closest(".pdf-page-wrapper")) {
-            console.log("[ReadLingo WordSelection] Selection outside PDF textLayer, ignoring.");
+        // Verify selection is inside PDF TextLayer or PDF reader page (support cross-span selections)
+        const inTextLayer = Boolean(
+            targetElement?.closest(".textLayer") ||
+            targetElement?.closest(".pdf-page-wrapper") ||
+            startEl?.closest(".textLayer") ||
+            endEl?.closest(".textLayer") ||
+            startEl?.closest(".pdf-page-wrapper")
+        );
+
+        if (!inTextLayer) {
             return;
         }
 
-        // Clean invisible/zero-width chars, soft hyphens, and edge punctuation
-        const sanitized = rawText.replace(/[\u200B-\u200D\uFEFF\u00AD]/g, "").trim();
+        // Clean invisible/zero-width chars, soft hyphens, non-breaking spaces, and edge punctuation
+        const sanitized = rawText
+            .replace(/[\u200B-\u200D\uFEFF\u00AD\u200E\u200F\u00A0]/g, " ")
+            .trim();
         const cleaned = sanitized
             .replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, "")
             .trim();
@@ -327,13 +360,11 @@ function Reader() {
         const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleaned);
 
         if (!isSingleWord || cleaned.length < 1 || cleaned.length > 45) {
-            console.log("[ReadLingo WordSelection] Rejected: Not a valid single English word (1-45 chars).");
             return;
         }
 
-        const rect = getSelectionRect(range);
+        const rect = getSelectionRect(range, startEl);
         if (!rect) {
-            console.warn("[ReadLingo WordSelection] No valid rect found.");
             return;
         }
 
@@ -394,27 +425,55 @@ function Reader() {
             setPopupError(err.message || "Could not find word details");
             setPopupLoading(false);
         }
-    }, [popupVisible, closePopup]);
+    }, [closePopup]);
 
     const selectionTimeoutRef = useRef(null);
 
-    // Document-level mouseup listener ensures selection is captured
+    // Document-level selection listeners: mouseup (desktop), touchend (mobile), and selectionchange (debounced)
     useEffect(() => {
+        const scheduleSelection = (delay) => {
+            if (isClosingRef.current) return;
+            if (selectionTimeoutRef.current) {
+                clearTimeout(selectionTimeoutRef.current);
+            }
+            selectionTimeoutRef.current = setTimeout(handleSelection, delay);
+        };
+
         const onMouseUp = (e) => {
             // Ignore mouseup inside the popup
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
             }
-            if (isClosingRef.current) return;
-            if (selectionTimeoutRef.current) {
-                clearTimeout(selectionTimeoutRef.current);
+            scheduleSelection(20);
+        };
+
+        const onTouchEnd = (e) => {
+            // Ignore touchend inside the popup
+            if (popupRef.current && popupRef.current.contains(e.target)) {
+                return;
             }
-            selectionTimeoutRef.current = setTimeout(handleSelection, 20);
+            // Allow 80ms for mobile selection handles to settle
+            scheduleSelection(80);
+        };
+
+        const onSelectionChange = () => {
+            // Only trigger when selection exists, is not collapsed, and contains non-empty trimmed text
+            const selection = window.getSelection();
+            if (!selection || selection.isCollapsed) return;
+            const text = selection.toString().trim();
+            if (!text) return;
+
+            scheduleSelection(150);
         };
 
         document.addEventListener("mouseup", onMouseUp);
+        document.addEventListener("touchend", onTouchEnd);
+        document.addEventListener("selectionchange", onSelectionChange);
+
         return () => {
             document.removeEventListener("mouseup", onMouseUp);
+            document.removeEventListener("touchend", onTouchEnd);
+            document.removeEventListener("selectionchange", onSelectionChange);
             if (selectionTimeoutRef.current) {
                 clearTimeout(selectionTimeoutRef.current);
             }
@@ -449,24 +508,26 @@ function Reader() {
     useEffect(() => {
         const handleClickOutside = (e) => {
             if (popupRef.current && !popupRef.current.contains(e.target)) {
-                // If clicked outside on header, toolbar, or non-text areas
+                // Do NOT close if tapping inside PDF textLayer or PDF page wrapper (user might be selecting a word!)
                 if (
-                    e.target.closest(".reader-header") ||
-                    e.target.closest(".reader-toolbar") ||
-                    e.target.closest(".upload-card") ||
-                    !e.target.closest(".textLayer")
+                    e.target.closest(".textLayer") ||
+                    e.target.closest(".pdf-page-wrapper") ||
+                    e.target.tagName === "CANVAS"
                 ) {
-                    closePopup();
+                    return;
                 }
+                closePopup();
             }
         };
 
         if (popupVisible) {
             document.addEventListener("mousedown", handleClickOutside);
+            document.addEventListener("touchstart", handleClickOutside, { passive: true });
         }
 
         return () => {
             document.removeEventListener("mousedown", handleClickOutside);
+            document.removeEventListener("touchstart", handleClickOutside);
         };
     }, [popupVisible, closePopup]);
 
