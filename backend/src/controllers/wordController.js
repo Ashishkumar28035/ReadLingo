@@ -221,12 +221,46 @@ async function fetchDatamuseDefinition(term) {
   }
 }
 
-// Helper: fetch Hindi translation from MyMemory API
+// Helper: fetch Hindi translation from Google Translate (gtx endpoint - primary)
+async function fetchGoogleTranslation(term) {
+  try {
+    const res = await fetch(
+      `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=hi&dt=t&q=${encodeURIComponent(term)}`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; ReadLingo/1.0)',
+        },
+        signal: AbortSignal.timeout(3000),
+      }
+    );
+    if (!res.ok) return '';
+    const data = await res.json().catch(() => null);
+    if (!Array.isArray(data) || !Array.isArray(data[0])) return '';
+
+    let translatedText = '';
+    for (const segment of data[0]) {
+      if (segment && typeof segment[0] === 'string') {
+        translatedText += segment[0];
+      }
+    }
+
+    return cleanHindiText(translatedText, term);
+  } catch {
+    return '';
+  }
+}
+
+// Helper: fetch Hindi translation from MyMemory API (secondary fallback)
 async function fetchHindiTranslation(term) {
   try {
     const res = await fetch(
       `https://api.mymemory.translated.net/get?q=${encodeURIComponent(term)}&langpair=en|hi`,
-      { signal: AbortSignal.timeout(5000) }
+      {
+        headers: {
+          'User-Agent': 'ReadLingo/1.0',
+        },
+        signal: AbortSignal.timeout(2000),
+      }
     );
     if (!res.ok) return '';
     const data = await res.json().catch(() => null);
@@ -292,6 +326,13 @@ async function fetchHindiTranslation(term) {
   } catch {
     return '';
   }
+}
+
+// Combined translation helper: Try Google first, fall back to MyMemory
+async function getHindiTranslation(term) {
+  const googleTrans = await fetchGoogleTranslation(term);
+  if (googleTrans) return googleTrans;
+  return await fetchHindiTranslation(term);
 }
 
 // @desc    Lookup English definition, example sentence, and Hindi translation
@@ -360,10 +401,10 @@ export const lookupWord = async (req, res) => {
         return null;
       })(),
       (async () => {
-        let trans = await fetchHindiTranslation(word);
+        let trans = await getHindiTranslation(word);
         if (!trans) {
           for (const base of baseWords) {
-            trans = await fetchHindiTranslation(base);
+            trans = await getHindiTranslation(base);
             if (trans) break;
           }
         }
@@ -388,12 +429,23 @@ export const lookupWord = async (req, res) => {
       exampleSentence,
     };
 
-    // Cache successful lookup in memory
-    setCachedWord(word, responsePayload);
+    // Only cache successful word responses with a real Hindi translation (never cache degraded responses)
+    if (hindiMeaning && hindiMeaning !== 'Translation not available.') {
+      setCachedWord(word, responsePayload);
+    }
 
     res.json(responsePayload);
   } catch (error) {
     console.error('Word lookup error:', error);
     res.status(500).json({ message: 'Error retrieving word details' });
   }
+};
+
+export {
+  fetchGoogleTranslation,
+  fetchHindiTranslation,
+  getHindiTranslation,
+  getCachedWord,
+  setCachedWord,
+  lookupCache,
 };
