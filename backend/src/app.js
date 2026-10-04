@@ -12,6 +12,15 @@ const app = express();
 // Trust reverse proxies (Cloudflare, Render, Railway, Nginx)
 app.set('trust proxy', 1);
 
+// Security Headers
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-XSS-Protection', '0');
+  next();
+});
+
 // Middleware
 const allowedOrigin = process.env.CLIENT_URL || 'http://localhost:5173';
 app.use(

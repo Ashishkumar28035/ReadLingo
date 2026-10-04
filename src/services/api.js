@@ -24,6 +24,17 @@ async function request(endpoint, options = {}) {
     const data = await response.json().catch(() => ({}));
 
     if (!response.ok) {
+        if (
+            response.status === 401 &&
+            !endpoint.startsWith("/auth/login") &&
+            !endpoint.startsWith("/auth/signup")
+        ) {
+            localStorage.removeItem("token");
+            localStorage.removeItem("user");
+            if (window.location.pathname !== "/login" && window.location.pathname !== "/signup") {
+                window.location.href = "/login";
+            }
+        }
         throw new Error(data.message || `Request failed with status ${response.status}`);
     }
 

@@ -51,7 +51,15 @@ function Reader() {
     useEffect(() => {
         return () => {
             if (pdfDocRef.current) {
-                pdfDocRef.current.destroy().catch(() => {});
+                try {
+                    if (typeof pdfDocRef.current.destroy === "function") {
+                        pdfDocRef.current.destroy().catch(() => {});
+                    } else if (typeof pdfDocRef.current.cleanup === "function") {
+                        pdfDocRef.current.cleanup();
+                    }
+                } catch {
+                    // Safe cleanup ignore
+                }
             }
         };
     }, []);
@@ -83,7 +91,15 @@ function Reader() {
 
             // Clean up any previously loaded PDF to free memory
             if (pdfDoc) {
-                pdfDoc.destroy().catch(() => {});
+                try {
+                    if (typeof pdfDoc.destroy === "function") {
+                        pdfDoc.destroy().catch(() => {});
+                    } else if (typeof pdfDoc.cleanup === "function") {
+                        pdfDoc.cleanup();
+                    }
+                } catch {
+                    // Safe cleanup ignore
+                }
             }
 
             const arrayBuffer = await file.arrayBuffer();
@@ -380,6 +396,8 @@ function Reader() {
         }
     }, [popupVisible, closePopup]);
 
+    const selectionTimeoutRef = useRef(null);
+
     // Document-level mouseup listener ensures selection is captured
     useEffect(() => {
         const onMouseUp = (e) => {
@@ -388,12 +406,18 @@ function Reader() {
                 return;
             }
             if (isClosingRef.current) return;
-            setTimeout(handleSelection, 20);
+            if (selectionTimeoutRef.current) {
+                clearTimeout(selectionTimeoutRef.current);
+            }
+            selectionTimeoutRef.current = setTimeout(handleSelection, 20);
         };
 
         document.addEventListener("mouseup", onMouseUp);
         return () => {
             document.removeEventListener("mouseup", onMouseUp);
+            if (selectionTimeoutRef.current) {
+                clearTimeout(selectionTimeoutRef.current);
+            }
         };
     }, [handleSelection]);
 
