@@ -2,6 +2,8 @@ import { cleanEnglishText, cleanHindiText } from '../utils/sanitizer.js';
 
 // In-memory cache for successful word lookups (normalizedWord -> { data, timestamp })
 const lookupCache = new Map();
+const definitionCache = new Map();
+const translationCache = new Map();
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes TTL
 const MAX_CACHE_SIZE = 1000;
 
@@ -66,12 +68,12 @@ function getBaseWords(word) {
   return [...new Set(candidates.filter(Boolean))];
 }
 
-// Helper: fetch from Free Dictionary API (timeout 5s)
+// Helper: fetch from Free Dictionary API (timeout 2.5s)
 async function fetchFreeDictionary(term) {
   try {
     const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(term)}`, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ReadLingo/1.0)' },
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
@@ -125,12 +127,12 @@ async function fetchFreeDictionary(term) {
   }
 }
 
-// Helper: fetch from Wiktionary REST API (fast fallback with real examples)
+// Helper: fetch from Wiktionary REST API (fast fallback with real examples, timeout 2.5s)
 async function fetchWiktionary(term) {
   try {
     const res = await fetch(`https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(term)}`, {
       headers: { 'User-Agent': 'ReadLingo/1.0 (education app; contact@readlingo.local)' },
-      signal: AbortSignal.timeout(4000),
+      signal: AbortSignal.timeout(2500),
     });
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
@@ -181,11 +183,11 @@ async function fetchWiktionary(term) {
   }
 }
 
-// Helper: fallback definition from Datamuse API (fast & highly reliable)
+// Helper: fallback definition from Datamuse API (fast & reliable, timeout 2s)
 async function fetchDatamuseDefinition(term) {
   try {
     const res = await fetch(`https://api.datamuse.com/words?sp=${encodeURIComponent(term)}&md=d&max=5`, {
-      signal: AbortSignal.timeout(3000),
+      signal: AbortSignal.timeout(2000),
     });
     if (!res.ok) return null;
     const data = await res.json().catch(() => null);
@@ -195,7 +197,6 @@ async function fetchDatamuseDefinition(term) {
 
     const posMap = { n: 'noun', v: 'verb', adj: 'adjective', adv: 'adverb' };
 
-    // Search across entries for a valid common definition
     for (const item of data) {
       if (Array.isArray(item.defs) && item.defs.length > 0) {
         for (const d of item.defs) {
@@ -221,6 +222,39 @@ async function fetchDatamuseDefinition(term) {
   }
 }
 
+// Helper: fetch Hindi translation from Google Chrome client endpoint (fast ~300ms, avoids gtx 429 rate limit)
+async function fetchGoogleChromeTranslation(term) {
+  try {
+    const res = await fetch(
+      `https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=en&tl=hi&q=${encodeURIComponent(term)}`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+        signal: AbortSignal.timeout(2500),
+      }
+    );
+    if (!res.ok) return '';
+    const data = await res.json().catch(() => null);
+    if (!data) return '';
+
+    let text = '';
+    if (Array.isArray(data)) {
+      if (typeof data[0] === 'string') {
+        text = data[0];
+      } else if (Array.isArray(data[0]) && typeof data[0][0] === 'string') {
+        text = data[0][0];
+      }
+    } else if (typeof data === 'string') {
+      text = data;
+    }
+
+    return cleanHindiText(text, term);
+  } catch {
+    return '';
+  }
+}
+
 // Helper: fetch Hindi translation from Google Translate (gtx endpoint - primary)
 async function fetchGoogleTranslation(term) {
   try {
@@ -230,9 +264,19 @@ async function fetchGoogleTranslation(term) {
         headers: {
           'User-Agent': 'Mozilla/5.0 (compatible; ReadLingo/1.0)',
         },
-        signal: AbortSignal.timeout(3000),
+        signal: AbortSignal.timeout(2500),
       }
     );
+
+    // If Google gtx endpoint rate-limits with 429, seamlessly fall back to Chrome extension endpoint
+    if (res.status === 429) {
+      const chromeTrans = await fetchGoogleChromeTranslation(term);
+      if (chromeTrans && /[\u0900-\u097F]/.test(chromeTrans)) {
+        return chromeTrans;
+      }
+      return '';
+    }
+
     if (!res.ok) return '';
     const data = await res.json().catch(() => null);
     if (!Array.isArray(data) || !Array.isArray(data[0])) return '';
@@ -244,13 +288,18 @@ async function fetchGoogleTranslation(term) {
       }
     }
 
-    return cleanHindiText(translatedText, term);
+    const cleaned = cleanHindiText(translatedText, term);
+    if (cleaned && /[\u0900-\u097F]/.test(cleaned)) {
+      return cleaned;
+    }
+
+    return '';
   } catch {
     return '';
   }
 }
 
-// Helper: fetch Hindi translation from MyMemory API (secondary fallback)
+// Helper: fetch Hindi translation from MyMemory API (secondary fallback, timeout 4s)
 async function fetchHindiTranslation(term) {
   try {
     const res = await fetch(
@@ -259,7 +308,7 @@ async function fetchHindiTranslation(term) {
         headers: {
           'User-Agent': 'ReadLingo/1.0',
         },
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(4000),
       }
     );
     if (!res.ok) return '';
@@ -328,11 +377,136 @@ async function fetchHindiTranslation(term) {
   }
 }
 
-// Combined translation helper: Try Google first, fall back to MyMemory
+// Combined translation helper: Try Google first (GTX with 429 Chrome fallback), then MyMemory
 async function getHindiTranslation(term) {
   const googleTrans = await fetchGoogleTranslation(term);
-  if (googleTrans) return googleTrans;
-  return await fetchHindiTranslation(term);
+  if (googleTrans && /[\u0900-\u097F]/.test(googleTrans)) return googleTrans;
+
+  const myMemoryTrans = await fetchHindiTranslation(term);
+  if (myMemoryTrans && /[\u0900-\u097F]/.test(myMemoryTrans)) return myMemoryTrans;
+
+  return '';
+}
+
+// English definition resolution helper using fastest-successful-result strategy
+async function resolveEnglishDefinition(word, baseWords = []) {
+  // Check definition cache
+  const cached = definitionCache.get(word);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  // 1. Concurrently start Free Dictionary and Wiktionary for target word
+  const freePromise = fetchFreeDictionary(word);
+  const wikPromise = fetchWiktionary(word);
+
+  // Fastest-result race: whichever valid definition returns first wins
+  const first = await Promise.race([
+    freePromise.then((r) => (r?.definition ? { source: 'free', res: r } : new Promise(() => {}))),
+    wikPromise.then((r) => (r?.definition ? { source: 'wik', res: r } : new Promise(() => {}))),
+    new Promise((resolve) => setTimeout(resolve, 2500, null)),
+  ]);
+
+  let result = null;
+  if (first?.source === 'free' && first.res?.definition && first.res?.example) {
+    result = first.res;
+  } else if (first?.source === 'wik') {
+    // If Wiktionary finished first (fast CDN ~200ms), wait at most 250ms for Free Dictionary to provide phonetic/POS
+    const freeRes = await Promise.race([
+      freePromise,
+      new Promise((resolve) => setTimeout(resolve, 250, null)),
+    ]);
+    result = {
+      definition: first.res.definition,
+      phonetic: freeRes?.phonetic || '',
+      partOfSpeech: freeRes?.partOfSpeech || first.res.partOfSpeech || '',
+      example: first.res.example || freeRes?.example || '',
+    };
+  } else if (first?.source === 'free') {
+    const wikRes = await Promise.race([
+      wikPromise,
+      new Promise((resolve) => setTimeout(resolve, 250, null)),
+    ]);
+    result = {
+      definition: first.res.definition,
+      phonetic: first.res.phonetic || '',
+      partOfSpeech: first.res.partOfSpeech || wikRes?.partOfSpeech || '',
+      example: first.res.example || wikRes?.example || '',
+    };
+  } else {
+    // If race timed out, check settled values
+    const [f, w] = await Promise.allSettled([freePromise, wikPromise]);
+    const fVal = f.status === 'fulfilled' ? f.value : null;
+    const wVal = w.status === 'fulfilled' ? w.value : null;
+    if (fVal?.definition || wVal?.definition) {
+      result = {
+        definition: fVal?.definition || wVal?.definition,
+        phonetic: fVal?.phonetic || '',
+        partOfSpeech: fVal?.partOfSpeech || wVal?.partOfSpeech || '',
+        example: fVal?.example || wVal?.example || '',
+      };
+    }
+  }
+
+  if (result?.definition) {
+    definitionCache.set(word, { data: result, timestamp: Date.now() });
+    return result;
+  }
+
+  // 2. Base words fallback
+  for (const base of baseWords) {
+    const bFree = await fetchFreeDictionary(base);
+    if (bFree?.definition) {
+      definitionCache.set(word, { data: bFree, timestamp: Date.now() });
+      return bFree;
+    }
+    const bWik = await fetchWiktionary(base);
+    if (bWik?.definition) {
+      definitionCache.set(word, { data: bWik, timestamp: Date.now() });
+      return bWik;
+    }
+  }
+
+  // 3. Datamuse fallback
+  let dmData = await fetchDatamuseDefinition(word);
+  if (dmData?.definition) {
+    definitionCache.set(word, { data: dmData, timestamp: Date.now() });
+    return dmData;
+  }
+
+  for (const base of baseWords) {
+    dmData = await fetchDatamuseDefinition(base);
+    if (dmData?.definition) {
+      definitionCache.set(word, { data: dmData, timestamp: Date.now() });
+      return dmData;
+    }
+  }
+
+  return null;
+}
+
+// Hindi translation resolution helper with caching
+async function resolveHindiTranslation(word, baseWords = []) {
+  const cached = translationCache.get(word);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  let trans = await getHindiTranslation(word);
+  if (!trans && baseWords && baseWords.length > 0) {
+    for (const base of baseWords) {
+      trans = await getHindiTranslation(base);
+      if (trans) break;
+    }
+  }
+
+  const cleaned = cleanHindiText(trans, word);
+  if (cleaned && cleaned !== 'Translation not available.') {
+    translationCache.set(word, { data: cleaned, timestamp: Date.now() });
+    return cleaned;
+  }
+
+  return '';
 }
 
 // @desc    Lookup English definition, example sentence, and Hindi translation
@@ -363,56 +537,10 @@ export const lookupWord = async (req, res) => {
     const baseWords = getBaseWords(word);
 
     // Parallel fetch for definition and translation
-    const [dictPromise, transPromise] = [
-      (async () => {
-        // 1. Try Free Dictionary API for target word
-        let result = await fetchFreeDictionary(word);
-        if (result?.definition && result?.example) return result;
-
-        // 2. Try Wiktionary API for target word (fast & extracts real examples)
-        const wikResult = await fetchWiktionary(word);
-        if (wikResult?.definition) {
-          return {
-            definition: result?.definition || wikResult.definition,
-            phonetic: result?.phonetic || '',
-            partOfSpeech: result?.partOfSpeech || wikResult.partOfSpeech,
-            example: result?.example || wikResult.example,
-          };
-        }
-        if (result?.definition) return result;
-
-        // 3. If base words exist, try Free Dictionary / Wiktionary
-        for (const base of baseWords) {
-          result = await fetchFreeDictionary(base);
-          if (result?.definition) return result;
-          const baseWik = await fetchWiktionary(base);
-          if (baseWik?.definition) return baseWik;
-        }
-
-        // 4. Fallback to Datamuse dictionary
-        result = await fetchDatamuseDefinition(word);
-        if (result?.definition) return result;
-
-        for (const base of baseWords) {
-          result = await fetchDatamuseDefinition(base);
-          if (result?.definition) return result;
-        }
-
-        return null;
-      })(),
-      (async () => {
-        let trans = await getHindiTranslation(word);
-        if (!trans) {
-          for (const base of baseWords) {
-            trans = await getHindiTranslation(base);
-            if (trans) break;
-          }
-        }
-        return trans;
-      })(),
-    ];
-
-    const [dictData, rawHindi] = await Promise.all([dictPromise, transPromise]);
+    const [dictData, rawHindi] = await Promise.all([
+      resolveEnglishDefinition(word, baseWords),
+      resolveHindiTranslation(word, baseWords),
+    ]);
 
     const definition = cleanEnglishText(dictData?.definition) || 'Definition not available.';
     const phonetic = cleanEnglishText(dictData?.phonetic) || '';
@@ -441,11 +569,104 @@ export const lookupWord = async (req, res) => {
   }
 };
 
+// @desc    Fast English definition lookup
+// @route   GET /api/words/definition?word=...
+// @access  Public
+export const getWordDefinition = async (req, res) => {
+  try {
+    const rawWord = req.query.word;
+
+    if (!rawWord || typeof rawWord !== 'string') {
+      return res.status(400).json({ message: 'Word parameter is required' });
+    }
+
+    const normalizedWord = rawWord.trim().toLowerCase();
+    const word = normalizedWord.replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, '').trim();
+
+    if (!word || !/^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(word) || word.length > 45) {
+      return res.status(400).json({ message: 'Please provide a valid single English word (up to 45 characters)' });
+    }
+
+    const cachedLookup = getCachedWord(word);
+    if (cachedLookup?.definition && cachedLookup.definition !== 'Definition not available.') {
+      return res.json({
+        word,
+        phonetic: cachedLookup.phonetic || '',
+        partOfSpeech: cachedLookup.partOfSpeech || '',
+        definition: cachedLookup.definition,
+        exampleSentence: cachedLookup.exampleSentence || 'Example not available.',
+      });
+    }
+
+    const baseWords = getBaseWords(word);
+    const dictData = await resolveEnglishDefinition(word, baseWords);
+
+    const definition = cleanEnglishText(dictData?.definition) || 'Definition not available.';
+    const phonetic = cleanEnglishText(dictData?.phonetic) || '';
+    const partOfSpeech = cleanEnglishText(dictData?.partOfSpeech) || '';
+    const exampleSentence = cleanEnglishText(dictData?.example) || 'Example not available.';
+
+    res.json({
+      word,
+      phonetic,
+      partOfSpeech,
+      definition,
+      exampleSentence,
+    });
+  } catch (error) {
+    console.error('Word definition error:', error);
+    res.status(500).json({ message: 'Error retrieving word definition' });
+  }
+};
+
+// @desc    Fast Hindi translation lookup
+// @route   GET /api/words/translate?word=...
+// @access  Public
+export const getWordTranslation = async (req, res) => {
+  try {
+    const rawWord = req.query.word;
+
+    if (!rawWord || typeof rawWord !== 'string') {
+      return res.status(400).json({ message: 'Word parameter is required' });
+    }
+
+    const normalizedWord = rawWord.trim().toLowerCase();
+    const word = normalizedWord.replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, '').trim();
+
+    if (!word || !/^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(word) || word.length > 45) {
+      return res.status(400).json({ message: 'Please provide a valid single English word (up to 45 characters)' });
+    }
+
+    const cachedLookup = getCachedWord(word);
+    if (cachedLookup?.hindiMeaning && cachedLookup.hindiMeaning !== 'Translation not available.') {
+      return res.json({
+        word,
+        hindiMeaning: cachedLookup.hindiMeaning,
+      });
+    }
+
+    const baseWords = getBaseWords(word);
+    const rawHindi = await resolveHindiTranslation(word, baseWords);
+    const hindiMeaning = cleanHindiText(rawHindi, word) || 'Translation not available.';
+
+    res.json({
+      word,
+      hindiMeaning,
+    });
+  } catch (error) {
+    console.error('Word translation error:', error);
+    res.status(500).json({ message: 'Error retrieving Hindi translation' });
+  }
+};
+
 export {
+  fetchGoogleChromeTranslation,
   fetchGoogleTranslation,
   fetchHindiTranslation,
   getHindiTranslation,
   getCachedWord,
   setCachedWord,
   lookupCache,
+  definitionCache,
+  translationCache,
 };

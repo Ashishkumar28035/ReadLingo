@@ -132,6 +132,14 @@ a {
   border-top-color: var(--accent);
 }
 
+.btn-spinner.mini {
+  width: 12px;
+  height: 12px;
+  border-width: 1.5px;
+  border-color: var(--border-subtle);
+  border-top-color: var(--accent);
+}
+
 @keyframes spinnerRotate {
   to {
     transform: rotate(360deg);
@@ -595,6 +603,7 @@ a {
 .pdf-page-wrapper {
   position: relative;
   display: inline-block;
+  box-sizing: content-box;
   line-height: 0;
   box-shadow: var(--shadow-lg);
   border: 1px solid var(--border-subtle);
@@ -745,6 +754,30 @@ a {
   align-items: center;
   gap: 7px;
   line-height: 1.35;
+}
+
+.popup-hindi-badge.loading {
+  background: var(--bg-surface-sunken);
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.popup-hindi-badge.fallback {
+  background: var(--bg-surface-sunken);
+  border-color: var(--border-subtle);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.popup-definition.loading-state {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
 }
 
 .popup-hindi-label {

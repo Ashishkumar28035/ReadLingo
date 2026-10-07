@@ -68,6 +68,20 @@ export function lookupWord(word, options = {}) {
     });
 }
 
+export function getWordDefinition(word, options = {}) {
+    return request(`/words/definition?word=${encodeURIComponent(word)}`, {
+        method: "GET",
+        ...options,
+    });
+}
+
+export function getWordTranslation(word, options = {}) {
+    return request(`/words/translate?word=${encodeURIComponent(word)}`, {
+        method: "GET",
+        ...options,
+    });
+}
+
 export function saveVocabulary(wordData) {
     return request("/vocabulary", {
         method: "POST",

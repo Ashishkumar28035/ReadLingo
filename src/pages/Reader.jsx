@@ -8,6 +8,10 @@ import { lookupWord, saveVocabulary, checkVocabularySaved } from "../services/ap
 // Set worker source using Vite's URL import
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 
+// Shared discrete zoom levels across desktop and mobile: 60%, 70%, 80%, 90%, 100%, 110%, 120%
+const ZOOM_LEVELS = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2];
+const DEFAULT_ZOOM = 1.0;
+
 function Reader() {
     const navigate = useNavigate();
     const fileInputRef = useRef(null);
@@ -20,7 +24,7 @@ function Reader() {
     const [bookTitle, setBookTitle] = useState("");
     const [currentPage, setCurrentPage] = useState(1);
     const [totalPages, setTotalPages] = useState(0);
-    const [scale, setScale] = useState(1.2);
+    const [scale, setScale] = useState(DEFAULT_ZOOM);
     const [pageDimensions, setPageDimensions] = useState({ width: 0, height: 0 });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -41,6 +45,8 @@ function Reader() {
     useEffect(() => {
         popupVisibleRef.current = popupVisible;
     }, [popupVisible]);
+
+    const activeWordRef = useRef("");
 
     const handleLogout = () => {
         localStorage.removeItem("token");
@@ -132,7 +138,7 @@ function Reader() {
         if (file) loadPdfFile(file);
     };
 
-    // Render the current page on canvas + textLayer
+    // Render the current page on canvas + textLayer with devicePixelRatio support
     useEffect(() => {
         let isCancelled = false;
 
@@ -149,18 +155,35 @@ function Reader() {
                 const page = await pdfDoc.getPage(currentPage);
                 if (isCancelled) return;
 
+                // Support high-DPI displays (Retina, mobile screens, high-DPI laptops)
+                const dpr = window.devicePixelRatio || 1;
+                // Cap outputScale to 2.5 to avoid excessive memory on extreme screens
+                const outputScale = Math.min(Math.max(dpr, 1), 2.5);
+
                 const viewport = page.getViewport({ scale });
-                setPageDimensions({ width: viewport.width, height: viewport.height });
+                const cssWidth = Math.floor(viewport.width);
+                const cssHeight = Math.floor(viewport.height);
+
+                setPageDimensions({ width: cssWidth, height: cssHeight });
 
                 const canvas = canvasRef.current;
                 if (!canvas) return;
 
                 const context = canvas.getContext("2d");
-                canvas.height = viewport.height;
-                canvas.width = viewport.width;
+                // Internal canvas resolution scaled by outputScale for crisp rendering
+                canvas.width = Math.floor(viewport.width * outputScale);
+                canvas.height = Math.floor(viewport.height * outputScale);
+                // Canvas display dimensions match viewport CSS layout pixels exactly
+                canvas.style.width = `${cssWidth}px`;
+                canvas.style.height = `${cssHeight}px`;
+
+                const transform = outputScale !== 1
+                    ? [outputScale, 0, 0, outputScale, 0, 0]
+                    : null;
 
                 const renderContext = {
                     canvasContext: context,
+                    transform,
                     viewport,
                 };
 
@@ -170,19 +193,17 @@ function Reader() {
 
                 if (isCancelled) return;
 
-                // Render TextLayer for selectable text
+                // Render TextLayer for selectable text (strictly aligned with canvas CSS dimensions)
                 if (textLayerRef.current) {
                     const textLayerDiv = textLayerRef.current;
                     textLayerDiv.innerHTML = "";
-                    textLayerDiv.style.width = `${Math.floor(viewport.width)}px`;
-                    textLayerDiv.style.height = `${Math.floor(viewport.height)}px`;
+                    textLayerDiv.style.width = `${cssWidth}px`;
+                    textLayerDiv.style.height = `${cssHeight}px`;
                     textLayerDiv.style.setProperty("--total-scale-factor", viewport.scale);
                     textLayerDiv.style.setProperty("--scale-factor", viewport.scale);
 
                     const textContent = await page.getTextContent();
                     if (isCancelled) return;
-
-                    console.log("[ReadLingo] Rendering TextLayer with items count:", textContent.items.length);
 
                     const textLayer = new pdfjsLib.TextLayer({
                         textContentSource: textContent,
@@ -191,7 +212,6 @@ function Reader() {
                     });
 
                     await textLayer.render();
-                    console.log("[ReadLingo] TextLayer rendered successfully. Spans count:", textLayerDiv.children.length);
                 }
             } catch (err) {
                 if (err?.name !== "RenderingCancelledException") {
@@ -262,6 +282,7 @@ function Reader() {
     // Close popup: resets all state, clears selection, and aborts pending lookups
     const closePopup = useCallback(() => {
         isClosingRef.current = true;
+        activeWordRef.current = "";
         if (closingTimeoutRef.current) {
             clearTimeout(closingTimeoutRef.current);
         }
@@ -287,7 +308,9 @@ function Reader() {
         setPopupVisible(false);
         setSelectedWord("");
         setWordData(null);
-        setPopupLoading(false);
+        setDefinitionLoading(false);
+        setTranslationLoading(false);
+        setTranslationError(false);
         setPopupError("");
         setIsWordSaved(false);
         setSavingWord(false);
@@ -354,7 +377,8 @@ function Reader() {
             .trim();
         const cleaned = sanitized
             .replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, "")
-            .trim();
+            .trim()
+            .toLowerCase();
 
         // Must be a single English word (letters, optional internal apostrophe or hyphen)
         const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleaned);
@@ -362,6 +386,12 @@ function Reader() {
         if (!isSingleWord || cleaned.length < 1 || cleaned.length > 45) {
             return;
         }
+
+        // Avoid duplicate requests for the same active word when popup is already visible
+        if (activeWordRef.current === cleaned && popupVisibleRef.current) {
+            return;
+        }
+        activeWordRef.current = cleaned;
 
         const rect = getSelectionRect(range, startEl);
         if (!rect) {
@@ -401,29 +431,22 @@ function Reader() {
 
         try {
             const data = await lookupWord(cleaned, { signal: controller.signal });
-            // Guard: Ignore if a newer request was dispatched
-            if (latestRequestIdRef.current !== currentReqId) {
-                return;
-            }
+            if (latestRequestIdRef.current !== currentReqId) return;
             setWordData(data);
             setPopupLoading(false);
 
-            // Check if user already saved this word
-            try {
-                const checkRes = await checkVocabularySaved(cleaned, { signal: controller.signal });
-                if (latestRequestIdRef.current === currentReqId) {
-                    setIsWordSaved(Boolean(checkRes?.isSaved));
-                }
-            } catch {
-                // Ignore background check failure
-            }
+            // Check if user already saved this word in their vocabulary
+            checkVocabularySaved(cleaned, { signal: controller.signal })
+                .then((checkRes) => {
+                    if (latestRequestIdRef.current === currentReqId) {
+                        setIsWordSaved(Boolean(checkRes?.isSaved));
+                    }
+                })
+                .catch(() => {});
         } catch (err) {
-            if (err.name === "AbortError" || latestRequestIdRef.current !== currentReqId) {
-                return;
-            }
-            console.error("[ReadLingo WordSelection] Lookup error:", err);
-            setPopupError(err.message || "Could not find word details");
+            if (err.name === "AbortError" || latestRequestIdRef.current !== currentReqId) return;
             setPopupLoading(false);
+            setPopupError(err.message || "Could not find word details");
         }
     }, [closePopup]);
 
@@ -440,24 +463,21 @@ function Reader() {
         };
 
         const onMouseUp = (e) => {
-            // Ignore mouseup inside the popup
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
             }
-            scheduleSelection(20);
+            scheduleSelection(30);
         };
 
         const onTouchEnd = (e) => {
-            // Ignore touchend inside the popup
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
             }
-            // Allow 80ms for mobile selection handles to settle
-            scheduleSelection(80);
+            // Allow 100ms for mobile selection handles to settle
+            scheduleSelection(100);
         };
 
         const onSelectionChange = () => {
-            // Only trigger when selection exists, is not collapsed, and contains non-empty trimmed text
             const selection = window.getSelection();
             if (!selection || selection.isCollapsed) return;
             const text = selection.toString().trim();
@@ -531,18 +551,18 @@ function Reader() {
         };
     }, [popupVisible, closePopup]);
 
-    // Save Word handler: User must explicitly click 'Save Word'
+    // Save Word handler: User must explicitly click 'Save Word' (never auto-saved)
     const handleSaveWord = async () => {
         if (!wordData || isWordSaved || savingWord) return;
 
         try {
             setSavingWord(true);
             await saveVocabulary({
-                word: wordData.word,
-                definition: wordData.definition,
-                hindiMeaning: wordData.hindiMeaning,
-                exampleSentence: wordData.exampleSentence,
-                phonetic: wordData.phonetic,
+                word: wordData.word || selectedWord,
+                definition: wordData.definition || "",
+                hindiMeaning: wordData.hindiMeaning || "",
+                exampleSentence: wordData.exampleSentence || "",
+                phonetic: wordData.phonetic || "",
             });
             setIsWordSaved(true);
         } catch (err) {
@@ -566,19 +586,37 @@ function Reader() {
         }
     };
 
+    // Shared zoom handlers through discrete levels: 60, 70, 80, 90, 100, 110, 120
     const handleZoomIn = () => {
         setPopupVisible(false);
-        setScale((prev) => Math.min(Number((prev + 0.2).toFixed(1)), 3.0));
+        setScale((prev) => {
+            const rounded = Number(prev.toFixed(1));
+            const currentIndex = ZOOM_LEVELS.findIndex((lvl) => Math.abs(lvl - rounded) < 0.05);
+            if (currentIndex >= 0 && currentIndex < ZOOM_LEVELS.length - 1) {
+                return ZOOM_LEVELS[currentIndex + 1];
+            }
+            const next = ZOOM_LEVELS.find((lvl) => lvl > rounded + 0.01);
+            return next !== undefined ? next : ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
+        });
     };
 
     const handleZoomOut = () => {
         setPopupVisible(false);
-        setScale((prev) => Math.max(Number((prev - 0.2).toFixed(1)), 0.6));
+        setScale((prev) => {
+            const rounded = Number(prev.toFixed(1));
+            const currentIndex = ZOOM_LEVELS.findIndex((lvl) => Math.abs(lvl - rounded) < 0.05);
+            if (currentIndex > 0) {
+                return ZOOM_LEVELS[currentIndex - 1];
+            }
+            const reversed = [...ZOOM_LEVELS].reverse();
+            const prevLvl = reversed.find((lvl) => lvl < rounded - 0.01);
+            return prevLvl !== undefined ? prevLvl : ZOOM_LEVELS[0];
+        });
     };
 
     const handleResetZoom = () => {
         setPopupVisible(false);
-        setScale(1.2);
+        setScale(DEFAULT_ZOOM);
     };
 
     return (
@@ -667,13 +705,13 @@ function Reader() {
 
                     <div className="toolbar-divider" />
 
-                    {/* Zoom Controls */}
+                    {/* Shared Responsive Zoom Controls: 60%, 70%, 80%, 90%, 100%, 110%, 120% */}
                     <div className="toolbar-group">
                         <button
                             type="button"
                             className="toolbar-btn icon-btn"
                             onClick={handleZoomOut}
-                            disabled={scale <= 0.6}
+                            disabled={scale <= ZOOM_LEVELS[0]}
                             title="Zoom Out"
                         >
                             −
@@ -685,7 +723,7 @@ function Reader() {
                             type="button"
                             className="toolbar-btn icon-btn"
                             onClick={handleZoomIn}
-                            disabled={scale >= 3.0}
+                            disabled={scale >= ZOOM_LEVELS[ZOOM_LEVELS.length - 1]}
                             title="Zoom In"
                         >
                             +
@@ -694,7 +732,7 @@ function Reader() {
                             type="button"
                             className="toolbar-btn"
                             onClick={handleResetZoom}
-                            title="Reset to 120%"
+                            title="Reset to 100%"
                         >
                             Reset
                         </button>
@@ -809,15 +847,20 @@ function Reader() {
 
                     {wordData && !popupLoading && (
                         <>
-                            {/* Hindi Meaning */}
-                            {wordData.hindiMeaning && (
+                            {/* Hindi Meaning Badge */}
+                            {wordData.hindiMeaning && wordData.hindiMeaning !== "Translation not available." ? (
                                 <div className="popup-hindi-badge">
                                     <span className="popup-hindi-label">Hindi:</span>
                                     <span>{wordData.hindiMeaning}</span>
                                 </div>
+                            ) : (
+                                <div className="popup-hindi-badge fallback">
+                                    <span className="popup-hindi-label">Hindi:</span>
+                                    <span>Translation unavailable</span>
+                                </div>
                             )}
 
-                            {/* English Definition */}
+                            {/* English Definition Section */}
                             <div className="popup-section">
                                 <div className="popup-section-label">Definition</div>
                                 <div className="popup-definition">
@@ -825,7 +868,7 @@ function Reader() {
                                 </div>
                             </div>
 
-                            {/* Example Sentence */}
+                            {/* Example Sentence Section */}
                             <div className="popup-section">
                                 <div className="popup-section-label">Example</div>
                                 <div className="popup-example">
@@ -835,7 +878,7 @@ function Reader() {
                                 </div>
                             </div>
 
-                            {/* Save Word Button */}
+                            {/* Save Word Button (Enabled when word data is loaded; never auto-saved) */}
                             <div className="popup-footer">
                                 <button
                                     type="button"

@@ -1,11 +1,13 @@
 import mongoose from 'mongoose';
 import dns from 'dns';
 
-// Resolve SRV records using public DNS if local ISP/Windows DNS refuses SRV queries
-try {
-  dns.setServers(['8.8.8.8', '1.1.1.1']);
-} catch {
-  // Fall back to system DNS
+// Only configure public DNS if connecting to MongoDB Atlas SRV cluster where local ISP might fail SRV queries
+if (process.env.MONGODB_URI && process.env.MONGODB_URI.startsWith('mongodb+srv://')) {
+  try {
+    dns.setServers(['8.8.8.8', '1.1.1.1']);
+  } catch {
+    // Fall back to system DNS
+  }
 }
 
 export const connectDB = async () => {
