@@ -107,3 +107,11 @@ export function checkVocabularySaved(word, options = {}) {
         ...options,
     });
 }
+
+export function translateSentence(text, options = {}) {
+    return request("/words/translate-sentence", {
+        method: "POST",
+        body: JSON.stringify({ text }),
+        ...options,
+    });
+}

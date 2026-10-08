@@ -1,9 +1,10 @@
-import { cleanEnglishText, cleanHindiText } from '../utils/sanitizer.js';
+import { cleanEnglishText, cleanHindiText, cleanHindiSentenceText } from '../utils/sanitizer.js';
 
 // In-memory cache for successful word lookups (normalizedWord -> { data, timestamp })
 const lookupCache = new Map();
 const definitionCache = new Map();
 const translationCache = new Map();
+const sentenceTranslationCache = new Map();
 const CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes TTL
 const MAX_CACHE_SIZE = 1000;
 
@@ -659,14 +660,103 @@ export const getWordTranslation = async (req, res) => {
   }
 };
 
+// Helper: resolve Hindi translation for a complete English sentence
+async function resolveSentenceHindiTranslation(sentence) {
+  // 1. Try Google Translate primary (GTX endpoint)
+  const googleTrans = await fetchGoogleTranslation(sentence);
+  const cleanGoogle = cleanHindiSentenceText(googleTrans, sentence);
+  if (cleanGoogle) return cleanGoogle;
+
+  // 2. Try Google Chrome endpoint fallback
+  const chromeTrans = await fetchGoogleChromeTranslation(sentence);
+  const cleanChrome = cleanHindiSentenceText(chromeTrans, sentence);
+  if (cleanChrome) return cleanChrome;
+
+  // 3. Try MyMemory API fallback
+  try {
+    const res = await fetch(
+      `https://api.mymemory.translated.net/get?q=${encodeURIComponent(sentence)}&langpair=en|hi`,
+      {
+        headers: { 'User-Agent': 'ReadLingo/1.0' },
+        signal: AbortSignal.timeout(4000),
+      }
+    );
+    if (res.ok) {
+      const data = await res.json().catch(() => null);
+      const text = data?.responseData?.translatedText;
+      if (text && typeof text === 'string' && !text.includes('MYMEMORY WARNING:') && !text.includes('QUERY LENGTH LIMIT')) {
+        const cleanMyMemory = cleanHindiSentenceText(text, sentence);
+        if (cleanMyMemory) return cleanMyMemory;
+      }
+    }
+  } catch {
+    // Ignore and fallback to empty
+  }
+
+  return '';
+}
+
+// @desc    Translate a full English sentence or multiple words into Hindi
+// @route   POST /api/words/translate-sentence
+// @route   GET /api/words/translate-sentence?text=...
+// @access  Public
+export const translateSentence = async (req, res) => {
+  try {
+    const rawText = req.body?.text || req.query?.text || req.query?.sentence;
+
+    if (!rawText || typeof rawText !== 'string') {
+      return res.status(400).json({ message: 'Sentence text parameter is required' });
+    }
+
+    const trimmed = rawText.trim();
+    if (!trimmed || trimmed.length > 1000) {
+      return res.status(400).json({ message: 'Sentence must be between 1 and 1000 characters' });
+    }
+
+    // Check sentence cache
+    const cacheKey = trimmed.toLowerCase();
+    const cached = sentenceTranslationCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+      return res.json({
+        sentence: trimmed,
+        hindiTranslation: cached.data,
+      });
+    }
+
+    const rawHindi = await resolveSentenceHindiTranslation(trimmed);
+    const hindiTranslation = cleanHindiSentenceText(rawHindi, trimmed) || 'Translation not available.';
+
+    if (hindiTranslation && hindiTranslation !== 'Translation not available.') {
+      if (sentenceTranslationCache.size >= MAX_CACHE_SIZE) {
+        const oldestKey = sentenceTranslationCache.keys().next().value;
+        if (oldestKey) sentenceTranslationCache.delete(oldestKey);
+      }
+      sentenceTranslationCache.set(cacheKey, {
+        data: hindiTranslation,
+        timestamp: Date.now(),
+      });
+    }
+
+    return res.json({
+      sentence: trimmed,
+      hindiTranslation,
+    });
+  } catch (error) {
+    console.error('Sentence translation error:', error);
+    res.status(500).json({ message: 'Error retrieving sentence translation' });
+  }
+};
+
 export {
   fetchGoogleChromeTranslation,
   fetchGoogleTranslation,
   fetchHindiTranslation,
   getHindiTranslation,
+  resolveSentenceHindiTranslation,
   getCachedWord,
   setCachedWord,
   lookupCache,
   definitionCache,
   translationCache,
+  sentenceTranslationCache,
 };

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { signup } from "../services/api";
 
@@ -15,12 +15,28 @@ function Signup() {
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
 
-    // Redirect to reader if already logged in
-    useEffect(() => {
-        if (localStorage.getItem("token")) {
-            navigate("/reader", { replace: true });
+    const [existingSession, setExistingSession] = useState(() => {
+        const token = localStorage.getItem("token");
+        if (!token) return null;
+        try {
+            return JSON.parse(localStorage.getItem("user")) || { email: "active account" };
+        } catch {
+            return { email: "active account" };
         }
-    }, [navigate]);
+    });
+
+    const handleSwitchAccount = () => {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setExistingSession(null);
+        setError("");
+        setFormData({
+            name: "",
+            email: "",
+            password: "",
+            confirmPassword: "",
+        });
+    };
 
     const handleChange = (e) => {
         const { id, value } = e.target;
@@ -63,6 +79,11 @@ function Signup() {
             return;
         }
 
+        // Always clear previous session before attempting signup
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setExistingSession(null);
+
         try {
             setLoading(true);
             setError("");
@@ -73,7 +94,7 @@ function Signup() {
                 password: formData.password,
             });
 
-            if (data.token) {
+            if (data?.token) {
                 localStorage.setItem("token", data.token);
                 localStorage.setItem(
                     "user",
@@ -85,7 +106,7 @@ function Signup() {
                 );
             }
 
-            navigate("/reader");
+            navigate("/reader", { replace: true });
         } catch (err) {
             setError(err.message || "Failed to create account. Please try again.");
         } finally {
@@ -101,17 +122,54 @@ function Signup() {
                     <h1>ReadLingo</h1>
                 </div>
 
-                <div className="auth-heading">
-                    <h2>Create your account</h2>
-                    <p>Start learning vocabulary while you read.</p>
-                </div>
+                {existingSession ? (
+                    <div>
+                        <div className="auth-heading">
+                            <h2>Already Signed In</h2>
+                            <p>You have an active session on this browser.</p>
+                        </div>
 
-                {error && (
-                    <div className="auth-error" role="alert">
-                        <span className="auth-error-icon">⚠️</span>
-                        <span>{error}</span>
+                        <div className="auth-session-box">
+                            <div className="auth-session-user-info">
+                                <span className="auth-session-avatar">👤</span>
+                                <div className="auth-session-details">
+                                    <div className="auth-session-name">{existingSession.name || "ReadLingo User"}</div>
+                                    <div className="auth-session-email">{existingSession.email}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="auth-session-actions">
+                            <button
+                                type="button"
+                                className="auth-button"
+                                onClick={() => navigate("/reader", { replace: true })}
+                            >
+                                Continue to Reader
+                            </button>
+
+                            <button
+                                type="button"
+                                className="auth-button auth-button-secondary"
+                                onClick={handleSwitchAccount}
+                            >
+                                Logout & Create New Account
+                            </button>
+                        </div>
                     </div>
-                )}
+                ) : (
+                    <>
+                        <div className="auth-heading">
+                            <h2>Create your account</h2>
+                            <p>Start learning vocabulary while you read.</p>
+                        </div>
+
+                        {error && (
+                            <div className="auth-error" role="alert">
+                                <span className="auth-error-icon">⚠️</span>
+                                <span>{error}</span>
+                            </div>
+                        )}
 
                 <form onSubmit={handleSubmit} noValidate>
                     <div className="form-group">
@@ -188,10 +246,12 @@ function Signup() {
                     </button>
                 </form>
 
-                <p className="auth-footer">
-                    Already have an account?{" "}
-                    <Link to="/login">Log In</Link>
-                </p>
+                        <p className="auth-footer">
+                            Already have an account?{" "}
+                            <Link to="/login">Log In</Link>
+                        </p>
+                    </>
+                )}
             </div>
         </div>
     );

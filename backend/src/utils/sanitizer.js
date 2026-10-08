@@ -105,3 +105,58 @@ export function cleanHindiText(raw, term = '') {
 
   return str.replace(/\s+/g, ' ').trim();
 }
+
+/**
+ * Sanitizes complete Hindi sentence translations.
+ * Preserves sentence punctuation (such as पूर्णविराम '।', commas, quotation marks)
+ * and numbers while removing HTML, CSS, and mediawiki artifacts.
+ */
+export function cleanHindiSentenceText(raw, term = '') {
+  if (!raw || typeof raw !== 'string') return '';
+  let str = raw;
+
+  // 1. Remove style and script blocks
+  str = str.replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  str = str.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+
+  // 2. Remove leaked CSS or parser output
+  str = str.replace(/\.mw-parser-output[^{}]*\{[^}]*\}/gi, '');
+  str = str.replace(/\{[a-zA-Z\-_\s]+:[^}]+\}/gi, '');
+  str = str.replace(/\.defdate\s*\{[^}]*\}/gi, '');
+  str = str.replace(/\.mw-[a-zA-Z0-9_-]+/gi, '');
+
+  // 3. Decode HTML entities
+  str = str
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&#160;/gi, ' ')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+
+  // 4. Strip HTML tags
+  str = str.replace(/<[^>]+>/g, '');
+
+  // 5. Clean outer quotes
+  str = str.replace(/^["'“‘]+|["'”’]+$/g, '').trim();
+
+  // 6. Clean empty brackets
+  str = str.replace(/\(\s*\)/g, '').replace(/\[\s*\]/g, '');
+
+  // 7. Normalize repeated whitespace
+  str = str.replace(/\s+/g, ' ').trim();
+
+  // If translation is empty or identical to raw English sentence without any Hindi
+  if (!str || (term && str.toLowerCase() === term.toLowerCase())) {
+    return '';
+  }
+
+  // Must contain Devanagari characters to be valid Hindi
+  if (!/[\u0900-\u097F]/.test(str)) {
+    return '';
+  }
+
+  return str;
+}

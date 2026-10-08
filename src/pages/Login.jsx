@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../services/api";
 
@@ -13,12 +13,23 @@ function Login() {
     const [error, setError] = useState("");
     const [loading, setLoading] = useState(false);
 
-    // Redirect to reader if already logged in
-    useEffect(() => {
-        if (localStorage.getItem("token")) {
-            navigate("/reader", { replace: true });
+    const [existingSession, setExistingSession] = useState(() => {
+        const token = localStorage.getItem("token");
+        if (!token) return null;
+        try {
+            return JSON.parse(localStorage.getItem("user")) || { email: "active account" };
+        } catch {
+            return { email: "active account" };
         }
-    }, [navigate]);
+    });
+
+    const handleSwitchAccount = () => {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setExistingSession(null);
+        setError("");
+        setFormData({ email: "", password: "" });
+    };
 
     const handleChange = (e) => {
         const { id, value } = e.target;
@@ -53,6 +64,12 @@ function Login() {
             return;
         }
 
+        // CRITICAL: Always clear any existing token and session before attempting a new login.
+        // This guarantees that if the login fails, no stale token remains in localStorage.
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        setExistingSession(null);
+
         try {
             setLoading(true);
             setError("");
@@ -62,7 +79,7 @@ function Login() {
                 password: formData.password,
             });
 
-            if (data.token) {
+            if (data?.token) {
                 localStorage.setItem("token", data.token);
                 localStorage.setItem(
                     "user",
@@ -74,7 +91,7 @@ function Login() {
                 );
             }
 
-            navigate("/reader");
+            navigate("/reader", { replace: true });
         } catch (err) {
             setError(err.message || "Invalid email or password. Please try again.");
         } finally {
@@ -90,67 +107,106 @@ function Login() {
                     <h1>ReadLingo</h1>
                 </div>
 
-                <div className="auth-heading">
-                    <h2>Welcome back</h2>
-                    <p>Continue your reading and vocabulary journey.</p>
-                </div>
+                {existingSession ? (
+                    <div>
+                        <div className="auth-heading">
+                            <h2>Already Signed In</h2>
+                            <p>You have an active session on this browser.</p>
+                        </div>
 
-                {error && (
-                    <div className="auth-error" role="alert">
-                        <span className="auth-error-icon">⚠️</span>
-                        <span>{error}</span>
+                        <div className="auth-session-box">
+                            <div className="auth-session-user-info">
+                                <span className="auth-session-avatar">👤</span>
+                                <div className="auth-session-details">
+                                    <div className="auth-session-name">{existingSession.name || "ReadLingo User"}</div>
+                                    <div className="auth-session-email">{existingSession.email}</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="auth-session-actions">
+                            <button
+                                type="button"
+                                className="auth-button"
+                                onClick={() => navigate("/reader", { replace: true })}
+                            >
+                                Continue to Reader
+                            </button>
+
+                            <button
+                                type="button"
+                                className="auth-button auth-button-secondary"
+                                onClick={handleSwitchAccount}
+                            >
+                                Logout & Switch Account
+                            </button>
+                        </div>
                     </div>
-                )}
+                ) : (
+                    <>
+                        <div className="auth-heading">
+                            <h2>Welcome back</h2>
+                            <p>Continue your reading and vocabulary journey.</p>
+                        </div>
 
-                <form onSubmit={handleSubmit} noValidate>
-                    <div className="form-group">
-                        <label htmlFor="email">Email Address</label>
-                        <input
-                            id="email"
-                            type="email"
-                            placeholder="you@example.com"
-                            autoComplete="email"
-                            value={formData.email}
-                            onChange={handleChange}
-                            disabled={loading}
-                            required
-                        />
-                    </div>
-
-                    <div className="form-group">
-                        <label htmlFor="password">Password</label>
-                        <input
-                            id="password"
-                            type="password"
-                            placeholder="Enter your password"
-                            autoComplete="current-password"
-                            value={formData.password}
-                            onChange={handleChange}
-                            disabled={loading}
-                            required
-                        />
-                    </div>
-
-                    <button
-                        type="submit"
-                        className="auth-button"
-                        disabled={loading}
-                    >
-                        {loading ? (
-                            <span className="btn-loading-wrapper">
-                                <span className="btn-spinner" />
-                                <span>Logging in...</span>
-                            </span>
-                        ) : (
-                            "Log In"
+                        {error && (
+                            <div className="auth-error" role="alert">
+                                <span className="auth-error-icon">⚠️</span>
+                                <span>{error}</span>
+                            </div>
                         )}
-                    </button>
-                </form>
 
-                <p className="auth-footer">
-                    New to ReadLingo?{" "}
-                    <Link to="/signup">Create an account</Link>
-                </p>
+                        <form onSubmit={handleSubmit} noValidate>
+                            <div className="form-group">
+                                <label htmlFor="email">Email Address</label>
+                                <input
+                                    id="email"
+                                    type="email"
+                                    placeholder="you@example.com"
+                                    autoComplete="email"
+                                    value={formData.email}
+                                    onChange={handleChange}
+                                    disabled={loading}
+                                    required
+                                />
+                            </div>
+
+                            <div className="form-group">
+                                <label htmlFor="password">Password</label>
+                                <input
+                                    id="password"
+                                    type="password"
+                                    placeholder="Enter your password"
+                                    autoComplete="current-password"
+                                    value={formData.password}
+                                    onChange={handleChange}
+                                    disabled={loading}
+                                    required
+                                />
+                            </div>
+
+                            <button
+                                type="submit"
+                                className="auth-button"
+                                disabled={loading}
+                            >
+                                {loading ? (
+                                    <span className="btn-loading-wrapper">
+                                        <span className="btn-spinner" />
+                                        <span>Logging in...</span>
+                                    </span>
+                                ) : (
+                                    "Log In"
+                                )}
+                            </button>
+                        </form>
+
+                        <p className="auth-footer">
+                            New to ReadLingo?{" "}
+                            <Link to="/signup">Create an account</Link>
+                        </p>
+                    </>
+                )}
             </div>
         </div>
     );

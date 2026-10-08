@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getVocabulary, deleteVocabulary } from "../services/api";
+import { getVocabulary, deleteVocabulary, getMe } from "../services/api";
 
 function formatDisplayText(text) {
     if (!text || typeof text !== "string") return "";
@@ -38,11 +38,35 @@ function Vocabulary() {
     const [deletingId, setDeletingId] = useState(null);
     const [successMessage, setSuccessMessage] = useState("");
 
+    const [currentUser, setCurrentUser] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem("user")) || null;
+        } catch {
+            return null;
+        }
+    });
+
     const handleLogout = () => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-        navigate("/login");
+        setCurrentUser(null);
+        navigate("/login", { replace: true });
     };
+
+    useEffect(() => {
+        let isMounted = true;
+        getMe()
+            .then((userData) => {
+                if (isMounted && userData && userData.email) {
+                    setCurrentUser(userData);
+                    localStorage.setItem("user", JSON.stringify(userData));
+                }
+            })
+            .catch(() => {});
+        return () => {
+            isMounted = false;
+        };
+    }, []);
 
     useEffect(() => {
         let isMounted = true;
@@ -102,10 +126,21 @@ function Vocabulary() {
                         <span>◀</span>
                         <span>Back to Reader</span>
                     </Link>
+                    {currentUser && (
+                        <div
+                            className="reader-user-badge"
+                            title={`Signed in as ${currentUser.email || currentUser.name}`}
+                        >
+                            <span className="reader-user-icon">👤</span>
+                            <span className="reader-user-name">
+                                {currentUser.name || currentUser.email}
+                            </span>
+                        </div>
+                    )}
                     <button
                         type="button"
                         onClick={handleLogout}
-                        className="reader-btn-secondary"
+                        className="reader-btn-secondary reader-btn-logout"
                     >
                         Logout
                     </button>

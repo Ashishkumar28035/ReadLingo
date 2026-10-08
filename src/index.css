@@ -323,6 +323,106 @@ a {
   text-decoration: underline;
 }
 
+/* Auth Session Switcher Card */
+.auth-session-box {
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 22px;
+}
+
+.auth-session-user-info {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-session-avatar {
+  font-size: 22px;
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-full);
+  background: #e0e7ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.auth-session-details {
+  overflow: hidden;
+}
+
+.auth-session-name {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+
+.auth-session-email {
+  font-size: 13px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.auth-session-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auth-button-secondary {
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1.5px solid var(--border-subtle);
+  box-shadow: none;
+}
+
+.auth-button-secondary:hover:not(:disabled) {
+  background: var(--bg-surface-hover);
+  border-color: #cbd5e1;
+  color: var(--text-primary);
+}
+
+/* Reader User Badge */
+.reader-user-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  max-width: 200px;
+}
+
+.reader-user-icon {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.reader-user-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reader-btn-logout {
+  color: #ef4444;
+}
+
+.reader-btn-logout:hover {
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.05);
+}
+
 @media (max-width: 480px) {
   .auth-card {
     padding: 30px 22px;
@@ -911,6 +1011,67 @@ a {
   border: 1px solid var(--success-border);
   box-shadow: none;
   cursor: default;
+}
+
+/* ==========================================================================
+   Sentence Understanding Popup
+   ========================================================================== */
+
+.word-popup.sentence-popup {
+  width: min(400px, calc(100vw - 32px));
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+}
+
+.popup-sentence-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.popup-tag-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  background: var(--accent-light);
+  color: var(--accent);
+  border: 1px solid rgba(79, 70, 229, 0.25);
+}
+
+.sentence-display-box {
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  font-style: italic;
+  background: var(--bg-surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  word-break: break-word;
+}
+
+.sentence-hindi-box {
+  background: var(--hindi-bg);
+  border: 1px solid var(--hindi-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.sentence-hindi-box .popup-section-label {
+  color: var(--hindi-text);
+  opacity: 0.85;
+}
+
+.sentence-hindi-text {
+  font-size: 15.5px;
+  line-height: 1.6;
+  font-weight: 600;
+  color: var(--hindi-text);
+  word-break: break-word;
 }
 
 /* ==========================================================================

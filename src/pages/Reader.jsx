@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { lookupWord, saveVocabulary, checkVocabularySaved } from "../services/api";
+import { lookupWord, saveVocabulary, checkVocabularySaved, translateSentence, getMe } from "../services/api";
 
 // Set worker source using Vite's URL import
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -35,15 +35,24 @@ function Reader() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
 
-    // Word Popup State
+    // Contextual Popup State
     const [popupVisible, setPopupVisible] = useState(false);
+    const [popupType, setPopupType] = useState("word"); // "word" | "sentence"
     const [popupPos, setPopupPos] = useState({ top: 0, left: 0 });
+
+    // Word Popup State
     const [selectedWord, setSelectedWord] = useState("");
     const [wordData, setWordData] = useState(null);
     const [popupLoading, setPopupLoading] = useState(false);
     const [popupError, setPopupError] = useState("");
     const [isWordSaved, setIsWordSaved] = useState(false);
     const [savingWord, setSavingWord] = useState(false);
+
+    // Sentence Popup State
+    const [selectedSentence, setSelectedSentence] = useState("");
+    const [sentenceData, setSentenceData] = useState(null);
+    const [sentenceLoading, setSentenceLoading] = useState(false);
+    const [sentenceError, setSentenceError] = useState("");
 
     // Pronunciation state
     const [isSpeaking, setIsSpeaking] = useState(false);
@@ -160,7 +169,11 @@ function Reader() {
             return;
         }
 
-        const textToSpeak = (wordData?.word || selectedWord || "").trim();
+        const textToSpeak = (
+            popupType === "sentence"
+                ? (sentenceData?.sentence || selectedSentence || "")
+                : (wordData?.word || selectedWord || "")
+        ).trim();
         if (!textToSpeak) return;
 
         try {
@@ -208,7 +221,7 @@ function Reader() {
             setIsSpeaking(false);
             utteranceRef.current = null;
         }
-    }, [isSpeaking, wordData, selectedWord, getEnglishVoice, stopPronunciation]);
+    }, [isSpeaking, popupType, sentenceData, selectedSentence, wordData, selectedWord, getEnglishVoice, stopPronunciation]);
 
     const [isDragging, setIsDragging] = useState(false);
 
@@ -217,12 +230,42 @@ function Reader() {
         popupVisibleRef.current = popupVisible;
     }, [popupVisible]);
 
+    const popupTypeRef = useRef(popupType);
+    useEffect(() => {
+        popupTypeRef.current = popupType;
+    }, [popupType]);
+
     const activeWordRef = useRef("");
+    const activeSentenceRef = useRef("");
+
+    const [currentUser, setCurrentUser] = useState(() => {
+        try {
+            return JSON.parse(localStorage.getItem("user")) || null;
+        } catch {
+            return null;
+        }
+    });
+
+    useEffect(() => {
+        let isMounted = true;
+        getMe()
+            .then((userData) => {
+                if (isMounted && userData && userData.email) {
+                    setCurrentUser(userData);
+                    localStorage.setItem("user", JSON.stringify(userData));
+                }
+            })
+            .catch(() => {});
+        return () => {
+            isMounted = false;
+        };
+    }, []);
 
     const handleLogout = () => {
         localStorage.removeItem("token");
         localStorage.removeItem("user");
-        navigate("/login");
+        setCurrentUser(null);
+        navigate("/login", { replace: true });
     };
 
     const pdfDocRef = useRef(null);
@@ -454,6 +497,7 @@ function Reader() {
     const closePopup = useCallback(() => {
         isClosingRef.current = true;
         activeWordRef.current = "";
+        activeSentenceRef.current = "";
         if (closingTimeoutRef.current) {
             clearTimeout(closingTimeoutRef.current);
         }
@@ -478,12 +522,17 @@ function Reader() {
 
         stopPronunciation();
         setPopupVisible(false);
+        setPopupType("word");
         setSelectedWord("");
         setWordData(null);
         setPopupLoading(false);
         setPopupError("");
         setIsWordSaved(false);
         setSavingWord(false);
+        setSelectedSentence("");
+        setSentenceData(null);
+        setSentenceLoading(false);
+        setSentenceError("");
     }, [stopPronunciation]);
 
     // Detect user text selection on the PDF
@@ -541,83 +590,177 @@ function Reader() {
             return;
         }
 
-        // Clean invisible/zero-width chars, soft hyphens, non-breaking spaces, and edge punctuation
+        // Clean invisible/zero-width chars, soft hyphens, non-breaking spaces
         const sanitized = rawText
             .replace(/[\u200B-\u200D\uFEFF\u00AD\u200E\u200F\u00A0]/g, " ")
+            .replace(/\s+/g, " ")
             .trim();
-        const cleaned = sanitized
+
+        if (!sanitized) {
+            return;
+        }
+
+        // 1. Single English word check
+        const cleanedWord = sanitized
             .replace(/^[\s"'“‘([{<«–—.,;:!?]+|[\s"'”’)\]}>»–—.,;:!?]+$/g, "")
             .trim()
             .toLowerCase();
+        const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleanedWord) &&
+            cleanedWord.length >= 1 &&
+            cleanedWord.length <= 45;
 
-        // Must be a single English word (letters, optional internal apostrophe or hyphen)
-        const isSingleWord = /^[a-zA-Z]+(?:['’-][a-zA-Z]+)*$/.test(cleaned);
+        // 2. Sentence / Multiple English words check
+        const cleanedSentence = sanitized
+            .replace(/^[\s"'“‘([{<«–—]+|[\s"'”’)\]}>»–—]+$/g, "")
+            .trim();
+        const sentenceWords = cleanedSentence.split(/\s+/).filter(Boolean);
+        const isSentence = !isSingleWord &&
+            sentenceWords.length >= 2 &&
+            sentenceWords.length <= 150 &&
+            /[a-zA-Z]{2,}/.test(cleanedSentence) &&
+            cleanedSentence.length <= 1000;
 
-        if (!isSingleWord || cleaned.length < 1 || cleaned.length > 45) {
+        if (!isSingleWord && !isSentence) {
             return;
         }
-
-        // Avoid duplicate requests for the same active word when popup is already visible
-        if (activeWordRef.current === cleaned && popupVisibleRef.current) {
-            return;
-        }
-        activeWordRef.current = cleaned;
 
         const rect = getSelectionRect(range, startEl);
         if (!rect) {
             return;
         }
 
-        const popupWidth = Math.min(330, window.innerWidth - 32);
-        let left = rect.left + rect.width / 2 - popupWidth / 2;
-        left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
+        // Temporary debug logs for classification verification
+        if (process.env.NODE_ENV !== "production") {
+            console.log("[ReadLingo] Selection classified:", {
+                rawText,
+                sanitized,
+                isSingleWord,
+                isSentence,
+                cleanedWord: isSingleWord ? cleanedWord : null,
+                cleanedSentence: isSentence ? cleanedSentence : null,
+                rect,
+                targetElement,
+            });
+        }
 
-        const estimatedHeight = 310;
-        let top = rect.bottom + 10;
-        if (top + estimatedHeight > window.innerHeight) {
-            if (rect.top - estimatedHeight - 10 > 10) {
-                top = rect.top - estimatedHeight - 10;
-            } else {
-                top = Math.max(16, window.innerHeight - estimatedHeight - 16);
+        // Handle Single English Word Selection
+        if (isSingleWord) {
+            if (activeWordRef.current === cleanedWord && popupVisibleRef.current && popupTypeRef.current === "word") {
+                return;
             }
+            activeWordRef.current = cleanedWord;
+            activeSentenceRef.current = "";
+
+            const popupWidth = Math.min(340, window.innerWidth - 32);
+            let left = rect.left + rect.width / 2 - popupWidth / 2;
+            left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
+
+            const estimatedHeight = 310;
+            let top = rect.bottom + 10;
+            if (top + estimatedHeight > window.innerHeight) {
+                if (rect.top - estimatedHeight - 10 > 10) {
+                    top = rect.top - estimatedHeight - 10;
+                } else {
+                    top = Math.max(16, window.innerHeight - estimatedHeight - 16);
+                }
+            }
+
+            stopPronunciation();
+            setPopupType("word");
+            setSelectedWord(cleanedWord);
+            setSelectedSentence("");
+            setSentenceData(null);
+            setSentenceError("");
+            setSentenceLoading(false);
+            setPopupPos({ top, left });
+            setPopupVisible(true);
+            setPopupLoading(true);
+            setPopupError("");
+            setWordData(null);
+            setIsWordSaved(false);
+
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+            }
+            const controller = new AbortController();
+            abortControllerRef.current = controller;
+            const currentReqId = ++latestRequestIdRef.current;
+
+            try {
+                const data = await lookupWord(cleanedWord, { signal: controller.signal });
+                if (latestRequestIdRef.current !== currentReqId) return;
+                setWordData(data);
+                setPopupLoading(false);
+
+                checkVocabularySaved(cleanedWord, { signal: controller.signal })
+                    .then((checkRes) => {
+                        if (latestRequestIdRef.current === currentReqId) {
+                            setIsWordSaved(Boolean(checkRes?.isSaved));
+                        }
+                    })
+                    .catch(() => {});
+            } catch (err) {
+                if (err.name === "AbortError" || latestRequestIdRef.current !== currentReqId) return;
+                setPopupLoading(false);
+                setPopupError(err.message || "Could not find word details");
+            }
+            return;
         }
 
-        // 1. Show popup immediately with selected word and loading state
-        stopPronunciation();
-        setSelectedWord(cleaned);
-        setPopupPos({ top, left });
-        setPopupVisible(true);
-        setPopupLoading(true);
-        setPopupError("");
-        setWordData(null);
-        setIsWordSaved(false);
+        // Handle Multiple Words / Sentence Selection
+        if (isSentence) {
+            if (activeSentenceRef.current === cleanedSentence && popupVisibleRef.current && popupTypeRef.current === "sentence") {
+                return;
+            }
+            activeSentenceRef.current = cleanedSentence;
+            activeWordRef.current = "";
 
-        // 2. Abort prior pending request and track latest request ID
-        if (abortControllerRef.current) {
-            abortControllerRef.current.abort();
-        }
-        const controller = new AbortController();
-        abortControllerRef.current = controller;
-        const currentReqId = ++latestRequestIdRef.current;
+            const popupWidth = Math.min(390, window.innerWidth - 32);
+            let left = rect.left + rect.width / 2 - popupWidth / 2;
+            left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
 
-        try {
-            const data = await lookupWord(cleaned, { signal: controller.signal });
-            if (latestRequestIdRef.current !== currentReqId) return;
-            setWordData(data);
+            const estimatedHeight = 260;
+            let top = rect.bottom + 10;
+            if (top + estimatedHeight > window.innerHeight) {
+                if (rect.top - estimatedHeight - 10 > 10) {
+                    top = rect.top - estimatedHeight - 10;
+                } else {
+                    top = Math.max(16, window.innerHeight - estimatedHeight - 16);
+                }
+            }
+
+            stopPronunciation();
+            setPopupType("sentence");
+            setSelectedSentence(cleanedSentence);
+            setSelectedWord("");
+            setWordData(null);
             setPopupLoading(false);
+            setPopupError("");
+            setIsWordSaved(false);
+            setSentenceLoading(true);
+            setSentenceError("");
+            setSentenceData(null);
+            setPopupPos({ top, left });
+            setPopupVisible(true);
 
-            // Check if user already saved this word in their vocabulary
-            checkVocabularySaved(cleaned, { signal: controller.signal })
-                .then((checkRes) => {
-                    if (latestRequestIdRef.current === currentReqId) {
-                        setIsWordSaved(Boolean(checkRes?.isSaved));
-                    }
-                })
-                .catch(() => {});
-        } catch (err) {
-            if (err.name === "AbortError" || latestRequestIdRef.current !== currentReqId) return;
-            setPopupLoading(false);
-            setPopupError(err.message || "Could not find word details");
+            if (abortControllerRef.current) {
+                abortControllerRef.current.abort();
+            }
+            const controller = new AbortController();
+            abortControllerRef.current = controller;
+            const currentReqId = ++latestRequestIdRef.current;
+
+            try {
+                const data = await translateSentence(cleanedSentence, { signal: controller.signal });
+                if (latestRequestIdRef.current !== currentReqId) return;
+                setSentenceData(data);
+                setSentenceLoading(false);
+            } catch (err) {
+                if (err.name === "AbortError" || latestRequestIdRef.current !== currentReqId) return;
+                setSentenceLoading(false);
+                setSentenceError(err.message || "Could not translate sentence");
+            }
+            return;
         }
     }, [closePopup, stopPronunciation]);
 
@@ -831,10 +974,22 @@ function Reader() {
                         <span>Vocabulary</span>
                     </Link>
 
+                    {currentUser && (
+                        <div
+                            className="reader-user-badge"
+                            title={`Signed in as ${currentUser.email || currentUser.name}`}
+                        >
+                            <span className="reader-user-icon">👤</span>
+                            <span className="reader-user-name">
+                                {currentUser.name || currentUser.email}
+                            </span>
+                        </div>
+                    )}
+
                     <button
                         type="button"
                         onClick={handleLogout}
-                        className="reader-btn-secondary"
+                        className="reader-btn-secondary reader-btn-logout"
                     >
                         Logout
                     </button>
@@ -973,11 +1128,11 @@ function Reader() {
                 )}
             </main>
 
-            {/* Contextual Word Popup */}
+            {/* Contextual Word / Sentence Popup */}
             {popupVisible && (
                 <div
                     ref={popupRef}
-                    className="word-popup"
+                    className={`word-popup ${popupType === "sentence" ? "sentence-popup" : ""}`}
                     style={{
                         position: "fixed",
                         top: `${popupPos.top}px`,
@@ -985,128 +1140,211 @@ function Reader() {
                         zIndex: 99999,
                     }}
                 >
-                    <div className="popup-header">
-                        <div className="popup-word-title">
-                            <span className="popup-word-text">{wordData?.word || selectedWord}</span>
-                            {isSpeechSupported && (
-                                <button
-                                    type="button"
-                                    className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
-                                    onClick={togglePronunciation}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onTouchEnd={(e) => e.stopPropagation()}
-                                    title={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
-                                    aria-label={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
-                                >
-                                    <svg
-                                        width="15"
-                                        height="15"
-                                        viewBox="0 0 24 24"
-                                        fill="none"
-                                        stroke="currentColor"
-                                        strokeWidth="2"
-                                        strokeLinecap="round"
-                                        strokeLinejoin="round"
-                                        aria-hidden="true"
-                                    >
-                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                                        {isSpeaking && <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />}
-                                    </svg>
-                                </button>
-                            )}
-                            {wordData?.phonetic && (
-                                <span className="popup-phonetic">{wordData.phonetic}</span>
-                            )}
-                        </div>
-                        <button
-                            type="button"
-                            className="popup-close-btn"
-                            onMouseDown={(e) => {
-                                e.stopPropagation();
-                            }}
-                            onClick={(e) => {
-                                e.stopPropagation();
-                                closePopup();
-                            }}
-                            title="Close (Esc)"
-                        >
-                            ✕
-                        </button>
-                    </div>
-
-                    {popupLoading && (
-                        <div className="popup-loading">
-                            <div className="btn-spinner" />
-                            <span>Looking up word & meaning...</span>
-                        </div>
-                    )}
-
-                    {popupError && (
-                        <div className="auth-error" style={{ marginBottom: "12px", fontSize: "13px" }}>
-                            {popupError}
-                        </div>
-                    )}
-
-                    {wordData && !popupLoading && (
+                    {popupType === "word" ? (
                         <>
-                            {/* Hindi Meaning Badge */}
-                            {wordData.hindiMeaning && wordData.hindiMeaning !== "Translation not available." ? (
-                                <div className="popup-hindi-badge">
-                                    <span className="popup-hindi-label">Hindi:</span>
-                                    <span>{wordData.hindiMeaning}</span>
+                            <div className="popup-header">
+                                <div className="popup-word-title">
+                                    <span className="popup-word-text">{wordData?.word || selectedWord}</span>
+                                    {isSpeechSupported && (
+                                        <button
+                                            type="button"
+                                            className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
+                                            onClick={togglePronunciation}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            onTouchEnd={(e) => e.stopPropagation()}
+                                            title={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
+                                            aria-label={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
+                                        >
+                                            <svg
+                                                width="15"
+                                                height="15"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                strokeWidth="2"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                                {isSpeaking && <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />}
+                                            </svg>
+                                        </button>
+                                    )}
+                                    {wordData?.phonetic && (
+                                        <span className="popup-phonetic">{wordData.phonetic}</span>
+                                    )}
                                 </div>
-                            ) : (
-                                <div className="popup-hindi-badge fallback">
-                                    <span className="popup-hindi-label">Hindi:</span>
-                                    <span>Translation unavailable</span>
+                                <button
+                                    type="button"
+                                    className="popup-close-btn"
+                                    onMouseDown={(e) => {
+                                        e.stopPropagation();
+                                    }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        closePopup();
+                                    }}
+                                    title="Close (Esc)"
+                                >
+                                    ✕
+                                </button>
+                            </div>
+
+                            {popupLoading && (
+                                <div className="popup-loading">
+                                    <div className="btn-spinner" />
+                                    <span>Looking up word & meaning...</span>
                                 </div>
                             )}
 
-                            {/* English Definition Section */}
-                            <div className="popup-section">
-                                <div className="popup-section-label">Definition</div>
-                                <div className="popup-definition">
-                                    {wordData.definition || "Definition not available."}
+                            {popupError && (
+                                <div className="auth-error" style={{ marginBottom: "12px", fontSize: "13px" }}>
+                                    {popupError}
                                 </div>
-                            </div>
+                            )}
 
-                            {/* Example Sentence Section */}
-                            <div className="popup-section">
-                                <div className="popup-section-label">Example</div>
-                                <div className="popup-example">
-                                    {wordData.exampleSentence && wordData.exampleSentence !== "Example not available."
-                                        ? `“${wordData.exampleSentence}”`
-                                        : "Example not available."}
+                            {wordData && !popupLoading && (
+                                <>
+                                    {/* Hindi Meaning Badge */}
+                                    {wordData.hindiMeaning && wordData.hindiMeaning !== "Translation not available." ? (
+                                        <div className="popup-hindi-badge">
+                                            <span className="popup-hindi-label">Hindi:</span>
+                                            <span>{wordData.hindiMeaning}</span>
+                                        </div>
+                                    ) : (
+                                        <div className="popup-hindi-badge fallback">
+                                            <span className="popup-hindi-label">Hindi:</span>
+                                            <span>Translation unavailable</span>
+                                        </div>
+                                    )}
+
+                                    {/* English Definition Section */}
+                                    <div className="popup-section">
+                                        <div className="popup-section-label">Definition</div>
+                                        <div className="popup-definition">
+                                            {wordData.definition || "Definition not available."}
+                                        </div>
+                                    </div>
+
+                                    {/* Example Sentence Section */}
+                                    <div className="popup-section">
+                                        <div className="popup-section-label">Example</div>
+                                        <div className="popup-example">
+                                            {wordData.exampleSentence && wordData.exampleSentence !== "Example not available."
+                                                ? `“${wordData.exampleSentence}”`
+                                                : "Example not available."}
+                                        </div>
+                                    </div>
+
+                                    {/* Save Word Button (Enabled when word data is loaded; never auto-saved) */}
+                                    <div className="popup-footer">
+                                        <button
+                                            type="button"
+                                            className={`popup-save-btn ${isWordSaved ? "saved" : ""}`}
+                                            onClick={handleSaveWord}
+                                            disabled={savingWord || isWordSaved}
+                                        >
+                                            {isWordSaved ? (
+                                                <>
+                                                    <span>✓</span>
+                                                    <span>Saved in Vocabulary</span>
+                                                </>
+                                            ) : savingWord ? (
+                                                <>
+                                                    <span className="btn-spinner" />
+                                                    <span>Saving...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <span>⭐</span>
+                                                    <span>Save Word</span>
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </>
+                            )}
+                        </>
+                    ) : (
+                        <>
+                            {/* Sentence Understanding Popup */}
+                            <div className="popup-header">
+                                <div className="popup-sentence-title">
+                                    <span className="popup-tag-badge">Sentence</span>
+                                    {isSpeechSupported && (
+                                        <button
+                                            type="button"
+                                            className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
+                                            onClick={togglePronunciation}
+                                            onMouseDown={(e) => e.stopPropagation()}
+                                            onTouchEnd={(e) => e.stopPropagation()}
+                                            title={isSpeaking ? "Stop pronunciation" : "Pronounce sentence"}
+                                            aria-label={isSpeaking ? "Stop pronunciation" : "Pronounce sentence"}
+                                        >
+                                            <svg
+                                                width="15"
+                                                height="15"
+                                                viewBox="0 0 24 24"
+                                                fill="none"
+                                                stroke="currentColor"
+                                                strokeWidth="2"
+                                                strokeLinecap="round"
+                                                strokeLinejoin="round"
+                                                aria-hidden="true"
+                                            >
+                                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                                {isSpeaking && <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />}
+                                            </svg>
+                                        </button>
+                                    )}
                                 </div>
-                            </div>
-
-                            {/* Save Word Button (Enabled when word data is loaded; never auto-saved) */}
-                            <div className="popup-footer">
                                 <button
                                     type="button"
-                                    className={`popup-save-btn ${isWordSaved ? "saved" : ""}`}
-                                    onClick={handleSaveWord}
-                                    disabled={savingWord || isWordSaved}
+                                    className="popup-close-btn"
+                                    onMouseDown={(e) => {
+                                        e.stopPropagation();
+                                    }}
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        closePopup();
+                                    }}
+                                    title="Close (Esc)"
                                 >
-                                    {isWordSaved ? (
-                                        <>
-                                            <span>✓</span>
-                                            <span>Saved in Vocabulary</span>
-                                        </>
-                                    ) : savingWord ? (
-                                        <>
-                                            <span className="btn-spinner" />
-                                            <span>Saving...</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <span>⭐</span>
-                                            <span>Save Word</span>
-                                        </>
-                                    )}
+                                    ✕
                                 </button>
                             </div>
+
+                            {/* Selected Sentence Quote Display */}
+                            <div className="sentence-display-box">
+                                “{selectedSentence}”
+                            </div>
+
+                            {sentenceLoading && (
+                                <div className="popup-loading">
+                                    <div className="btn-spinner" />
+                                    <span>Translating sentence...</span>
+                                </div>
+                            )}
+
+                            {sentenceError && (
+                                <div className="auth-error" style={{ marginBottom: "12px", fontSize: "13px" }}>
+                                    {sentenceError}
+                                </div>
+                            )}
+
+                            {sentenceData && !sentenceLoading && (
+                                <div className="sentence-hindi-box">
+                                    <div className="popup-section-label">Hindi Translation</div>
+                                    <div className="sentence-hindi-text">
+                                        {sentenceData.hindiTranslation && sentenceData.hindiTranslation !== "Translation not available."
+                                            ? sentenceData.hindiTranslation
+                                            : "Translation unavailable."}
+                                    </div>
+                                </div>
+                            )}
                         </>
                     )}
                 </div>

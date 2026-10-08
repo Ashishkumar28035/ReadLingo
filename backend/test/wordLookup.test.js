@@ -6,6 +6,8 @@ import {
   getCachedWord,
   lookupCache,
   lookupWord,
+  translateSentence,
+  sentenceTranslationCache,
 } from '../src/controllers/wordController.js';
 
 describe('Word Controller - Hindi Translation & Lookup Flow', () => {
@@ -13,11 +15,13 @@ describe('Word Controller - Hindi Translation & Lookup Flow', () => {
 
   beforeEach(() => {
     lookupCache.clear();
+    sentenceTranslationCache.clear();
     globalThis.fetch = originalFetch;
   });
 
   afterEach(() => {
     lookupCache.clear();
+    sentenceTranslationCache.clear();
     globalThis.fetch = originalFetch;
   });
 
@@ -258,5 +262,89 @@ describe('Word Controller - Hindi Translation & Lookup Flow', () => {
     assert.equal(responsePayload.definition, 'The act of conducting a test.');
     assert.equal(responsePayload.exampleSentence, 'Testing is essential for quality software.');
     assert.equal(responsePayload.hindiMeaning, 'परीक्षण');
+  });
+
+  test('7. Sentence translation: returns clean Hindi translation and caches result', async () => {
+    const inputSentence = 'The boy was exhausted after walking for several hours.';
+    const mockHindi = 'कई घंटों तक चलने के बाद लड़का बहुत थक गया था।';
+
+    globalThis.fetch = async (url) => {
+      const urlStr = String(url);
+      if (urlStr.includes('translate.googleapis.com')) {
+        return createMockResponse(200, [[[mockHindi, inputSentence]]]);
+      }
+      return originalFetch(url);
+    };
+
+    let responsePayload = null;
+    const req = { body: { text: inputSentence } };
+    const res = {
+      status: () => res,
+      json: (data) => {
+        responsePayload = data;
+        return data;
+      },
+    };
+
+    await translateSentence(req, res);
+    assert.ok(responsePayload);
+    assert.equal(responsePayload.sentence, inputSentence);
+    assert.equal(responsePayload.hindiTranslation, mockHindi);
+
+    // Verify sentence is in cache
+    const cached = sentenceTranslationCache.get(inputSentence.toLowerCase());
+    assert.ok(cached);
+    assert.equal(cached.data, mockHindi);
+  });
+
+  test('8. Sentence translation: rejects empty text or text exceeding 1000 characters', async () => {
+    let errorCode = 0;
+    let errorMessage = '';
+    const reqEmpty = { body: { text: '   ' } };
+    const res = {
+      status: (code) => {
+        errorCode = code;
+        return res;
+      },
+      json: (data) => {
+        errorMessage = data.message;
+        return data;
+      },
+    };
+
+    await translateSentence(reqEmpty, res);
+    assert.equal(errorCode, 400);
+    assert.equal(errorMessage, 'Sentence must be between 1 and 1000 characters');
+
+    const reqMissing = { body: {} };
+    await translateSentence(reqMissing, res);
+    assert.equal(errorCode, 400);
+    assert.equal(errorMessage, 'Sentence text parameter is required');
+  });
+
+  test('9. Sentence translation: falls back gracefully when providers fail', async () => {
+    const inputSentence = 'A gentle breeze blew across the quiet valley.';
+
+    globalThis.fetch = async () => {
+      return createMockResponse(500, {}, false);
+    };
+
+    let responsePayload = null;
+    const req = { body: { text: inputSentence } };
+    const res = {
+      status: () => res,
+      json: (data) => {
+        responsePayload = data;
+        return data;
+      },
+    };
+
+    await translateSentence(req, res);
+    assert.ok(responsePayload);
+    assert.equal(responsePayload.sentence, inputSentence);
+    assert.equal(responsePayload.hindiTranslation, 'Translation not available.');
+
+    // Unsuccessful response must NOT be cached
+    assert.equal(sentenceTranslationCache.has(inputSentence.toLowerCase()), false);
   });
 });
