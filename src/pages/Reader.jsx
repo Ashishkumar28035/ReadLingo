@@ -12,6 +12,12 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 const ZOOM_LEVELS = [0.6, 0.7, 0.8, 0.9, 1.0, 1.1, 1.2];
 const DEFAULT_ZOOM = 1.0;
 
+// Check client-side SpeechSynthesis support safely
+const isSpeechSupported =
+    typeof window !== "undefined" &&
+    "speechSynthesis" in window &&
+    typeof window.SpeechSynthesisUtterance !== "undefined";
+
 function Reader() {
     const navigate = useNavigate();
     const fileInputRef = useRef(null);
@@ -38,6 +44,171 @@ function Reader() {
     const [popupError, setPopupError] = useState("");
     const [isWordSaved, setIsWordSaved] = useState(false);
     const [savingWord, setSavingWord] = useState(false);
+
+    // Pronunciation state
+    const [isSpeaking, setIsSpeaking] = useState(false);
+    const [voices, setVoices] = useState([]);
+    const utteranceRef = useRef(null);
+
+    // Cancel speech and clear utterance safely
+    const stopPronunciation = useCallback(() => {
+        if (utteranceRef.current) {
+            utteranceRef.current.onstart = null;
+            utteranceRef.current.onend = null;
+            utteranceRef.current.onerror = null;
+            utteranceRef.current = null;
+        }
+        if (isSpeechSupported) {
+            try {
+                window.speechSynthesis.cancel();
+            } catch {
+                // Safe ignore
+            }
+        }
+        setIsSpeaking(false);
+    }, []);
+
+    // Load available voices asynchronously for Chrome/Android/Safari/iOS support
+    useEffect(() => {
+        if (!isSpeechSupported) return;
+
+        const updateVoices = () => {
+            try {
+                const list = window.speechSynthesis.getVoices() || [];
+                if (list.length > 0) {
+                    setVoices(list);
+                }
+            } catch {
+                // Safe ignore
+            }
+        };
+
+        updateVoices();
+
+        if (typeof window.speechSynthesis.addEventListener === "function") {
+            window.speechSynthesis.addEventListener("voiceschanged", updateVoices);
+        } else if ("onvoiceschanged" in window.speechSynthesis) {
+            window.speechSynthesis.onvoiceschanged = updateVoices;
+        }
+
+        return () => {
+            if (typeof window.speechSynthesis.removeEventListener === "function") {
+                window.speechSynthesis.removeEventListener("voiceschanged", updateVoices);
+            } else if ("onvoiceschanged" in window.speechSynthesis) {
+                window.speechSynthesis.onvoiceschanged = null;
+            }
+        };
+    }, []);
+
+    // Cleanup: cancel speech when Reader unmounts
+    useEffect(() => {
+        return () => {
+            if (utteranceRef.current) {
+                utteranceRef.current.onstart = null;
+                utteranceRef.current.onend = null;
+                utteranceRef.current.onerror = null;
+                utteranceRef.current = null;
+            }
+            if (isSpeechSupported) {
+                try {
+                    window.speechSynthesis.cancel();
+                } catch {
+                    // Safe ignore
+                }
+            }
+        };
+    }, []);
+
+    // Safe English voice selector (prefer en-US, then en-GB, then English-capable, fallback to default)
+    const getEnglishVoice = useCallback(() => {
+        if (!isSpeechSupported) return null;
+        try {
+            const voiceList = voices.length > 0 ? voices : (window.speechSynthesis.getVoices() || []);
+            if (!voiceList || voiceList.length === 0) return null;
+
+            // 1. Prefer en-US
+            let matched = voiceList.find((v) => /^en[-_]US$/i.test(v.lang));
+            if (matched) return matched;
+
+            // 2. Prefer en-GB
+            matched = voiceList.find((v) => /^en[-_]GB$/i.test(v.lang));
+            if (matched) return matched;
+
+            // 3. Fallback to any English voice
+            matched = voiceList.find((v) => /^en\b/i.test(v.lang) || v.lang?.toLowerCase().startsWith("en-"));
+            if (matched) return matched;
+
+            // 4. Fallback to default voice
+            matched = voiceList.find((v) => v.default);
+            return matched || voiceList[0] || null;
+        } catch {
+            return null;
+        }
+    }, [voices]);
+
+    // Explicit pronunciation toggle triggered only by user click
+    const togglePronunciation = useCallback((e) => {
+        if (e) {
+            e.stopPropagation();
+            e.preventDefault();
+        }
+
+        if (!isSpeechSupported) return;
+
+        if (isSpeaking) {
+            stopPronunciation();
+            return;
+        }
+
+        const textToSpeak = (wordData?.word || selectedWord || "").trim();
+        if (!textToSpeak) return;
+
+        try {
+            stopPronunciation();
+            if (window.speechSynthesis.paused) {
+                window.speechSynthesis.resume();
+            }
+
+            const utterance = new SpeechSynthesisUtterance(textToSpeak);
+            utterance.rate = 0.9;
+            utterance.pitch = 1.0;
+
+            const voice = getEnglishVoice();
+            if (voice) {
+                utterance.voice = voice;
+                utterance.lang = voice.lang || "en-US";
+            } else {
+                utterance.lang = "en-US";
+            }
+
+            utterance.onstart = () => {
+                if (utteranceRef.current === utterance) {
+                    setIsSpeaking(true);
+                }
+            };
+
+            utterance.onend = () => {
+                if (utteranceRef.current === utterance) {
+                    setIsSpeaking(false);
+                    utteranceRef.current = null;
+                }
+            };
+
+            utterance.onerror = () => {
+                if (utteranceRef.current === utterance) {
+                    setIsSpeaking(false);
+                    utteranceRef.current = null;
+                }
+            };
+
+            utteranceRef.current = utterance;
+            window.speechSynthesis.speak(utterance);
+        } catch (err) {
+            console.warn("[ReadLingo] Pronunciation error:", err);
+            setIsSpeaking(false);
+            utteranceRef.current = null;
+        }
+    }, [isSpeaking, wordData, selectedWord, getEnglishVoice, stopPronunciation]);
 
     const [isDragging, setIsDragging] = useState(false);
 
@@ -305,16 +476,15 @@ function Reader() {
             console.warn("[ReadLingo] Error clearing text selection:", e);
         }
 
+        stopPronunciation();
         setPopupVisible(false);
         setSelectedWord("");
         setWordData(null);
-        setDefinitionLoading(false);
-        setTranslationLoading(false);
-        setTranslationError(false);
+        setPopupLoading(false);
         setPopupError("");
         setIsWordSaved(false);
         setSavingWord(false);
-    }, []);
+    }, [stopPronunciation]);
 
     // Detect user text selection on the PDF
     const handleSelection = useCallback(async () => {
@@ -413,6 +583,7 @@ function Reader() {
         }
 
         // 1. Show popup immediately with selected word and loading state
+        stopPronunciation();
         setSelectedWord(cleaned);
         setPopupPos({ top, left });
         setPopupVisible(true);
@@ -448,7 +619,7 @@ function Reader() {
             setPopupLoading(false);
             setPopupError(err.message || "Could not find word details");
         }
-    }, [closePopup]);
+    }, [closePopup, stopPronunciation]);
 
     const selectionTimeoutRef = useRef(null);
 
@@ -574,6 +745,7 @@ function Reader() {
 
     const handlePrevPage = () => {
         if (currentPage > 1) {
+            stopPronunciation();
             setPopupVisible(false);
             setCurrentPage((prev) => prev - 1);
         }
@@ -581,6 +753,7 @@ function Reader() {
 
     const handleNextPage = () => {
         if (currentPage < totalPages) {
+            stopPronunciation();
             setPopupVisible(false);
             setCurrentPage((prev) => prev + 1);
         }
@@ -588,6 +761,7 @@ function Reader() {
 
     // Shared zoom handlers through discrete levels: 60, 70, 80, 90, 100, 110, 120
     const handleZoomIn = () => {
+        stopPronunciation();
         setPopupVisible(false);
         setScale((prev) => {
             const rounded = Number(prev.toFixed(1));
@@ -601,6 +775,7 @@ function Reader() {
     };
 
     const handleZoomOut = () => {
+        stopPronunciation();
         setPopupVisible(false);
         setScale((prev) => {
             const rounded = Number(prev.toFixed(1));
@@ -615,6 +790,7 @@ function Reader() {
     };
 
     const handleResetZoom = () => {
+        stopPronunciation();
         setPopupVisible(false);
         setScale(DEFAULT_ZOOM);
     };
@@ -811,7 +987,34 @@ function Reader() {
                 >
                     <div className="popup-header">
                         <div className="popup-word-title">
-                            <span>{wordData?.word || selectedWord}</span>
+                            <span className="popup-word-text">{wordData?.word || selectedWord}</span>
+                            {isSpeechSupported && (
+                                <button
+                                    type="button"
+                                    className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
+                                    onClick={togglePronunciation}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                    onTouchEnd={(e) => e.stopPropagation()}
+                                    title={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
+                                    aria-label={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
+                                >
+                                    <svg
+                                        width="15"
+                                        height="15"
+                                        viewBox="0 0 24 24"
+                                        fill="none"
+                                        stroke="currentColor"
+                                        strokeWidth="2"
+                                        strokeLinecap="round"
+                                        strokeLinejoin="round"
+                                        aria-hidden="true"
+                                    >
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                        {isSpeaking && <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />}
+                                    </svg>
+                                </button>
+                            )}
                             {wordData?.phonetic && (
                                 <span className="popup-phonetic">{wordData.phonetic}</span>
                             )}
