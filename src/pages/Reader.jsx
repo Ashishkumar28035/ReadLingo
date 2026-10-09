@@ -18,6 +18,72 @@ const isSpeechSupported =
     "speechSynthesis" in window &&
     typeof window.SpeechSynthesisUtterance !== "undefined";
 
+// Safe, non-overlapping initial position calculator for word and sentence popups
+function computeInitialPopupPosition(range, popupType, fallbackEl = null) {
+    if (!range) return { top: 100, left: 100 };
+
+    const clientRects = Array.from(range.getClientRects()).filter(
+        (r) => r.width > 0 && r.height > 0
+    );
+    const bRect = range.getBoundingClientRect();
+
+    let selTop = bRect?.top || 0;
+    let selBottom = bRect?.bottom || 0;
+    let selLeft = bRect?.left || 0;
+    let selRight = bRect?.right || 0;
+
+    if (clientRects.length > 0) {
+        selTop = Math.min(...clientRects.map((r) => r.top));
+        selBottom = Math.max(...clientRects.map((r) => r.bottom));
+        selLeft = Math.min(...clientRects.map((r) => r.left));
+        selRight = Math.max(...clientRects.map((r) => r.right));
+    } else if (fallbackEl?.getBoundingClientRect) {
+        const fRect = fallbackEl.getBoundingClientRect();
+        if (fRect.width > 0 || fRect.height > 0) {
+            selTop = fRect.top;
+            selBottom = fRect.bottom;
+            selLeft = fRect.left;
+            selRight = fRect.right;
+        }
+    }
+
+    const isWord = popupType === "word";
+    const popupWidth = Math.min(isWord ? 340 : 400, window.innerWidth - 32);
+    const estimatedHeight = isWord ? 310 : 250;
+    const margin = 14;
+    const offset = 10;
+
+    // Center horizontally with the selected text
+    const selCenterX = selLeft + (selRight - selLeft) / 2;
+    let left = selCenterX - popupWidth / 2;
+    left = Math.max(margin, Math.min(left, window.innerWidth - popupWidth - margin));
+
+    // Vertical placement: prefer below selection, fallback above, fallback clamp
+    const spaceBelow = window.innerHeight - selBottom;
+    const spaceAbove = selTop;
+
+    let top;
+    if (spaceBelow >= estimatedHeight + offset + margin) {
+        // Fits comfortably below selection without covering text
+        top = selBottom + offset;
+    } else if (spaceAbove >= estimatedHeight + offset + margin) {
+        // Fits comfortably above selection without covering text
+        top = selTop - estimatedHeight - offset;
+    } else {
+        // Limited screen height: place on whichever side offers more space
+        if (spaceBelow >= spaceAbove) {
+            top = Math.max(margin, window.innerHeight - estimatedHeight - margin);
+        } else {
+            top = margin;
+        }
+    }
+
+    // Safety clamp within viewport
+    top = Math.max(margin, Math.min(top, window.innerHeight - estimatedHeight - margin));
+
+    return { top: Math.round(top), left: Math.round(left) };
+}
+
 function Reader() {
     const navigate = useNavigate();
     const fileInputRef = useRef(null);
@@ -223,7 +289,82 @@ function Reader() {
         }
     }, [isSpeaking, popupType, sentenceData, selectedSentence, wordData, selectedWord, getEnglishVoice, stopPronunciation]);
 
-    const [isDragging, setIsDragging] = useState(false);
+    const [isDragging, setIsDragging] = useState(false); // File drop drag
+    const [isMovingPopup, setIsMovingPopup] = useState(false); // Movable popup drag
+    const dragStartRef = useRef({ startX: 0, startY: 0, initialLeft: 0, initialTop: 0 });
+    const hasUserMovedRef = useRef(false);
+    const isPointerActiveRef = useRef(false);
+    const isTouchActiveRef = useRef(false);
+    const popupPosRef = useRef(popupPos);
+    useEffect(() => {
+        popupPosRef.current = popupPos;
+    }, [popupPos]);
+
+    // Drag popup pointer handler
+    const handleDragPointerDown = useCallback((e) => {
+        if (e.button !== 0 && e.pointerType === "mouse") return;
+        if (
+            e.target.closest("button") ||
+            e.target.closest("a") ||
+            e.target.closest("input") ||
+            e.target.closest(".popup-audio-btn") ||
+            e.target.closest(".popup-close-btn")
+        ) {
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const rect = popupRef.current?.getBoundingClientRect();
+        dragStartRef.current = {
+            startX: e.clientX,
+            startY: e.clientY,
+            initialLeft: rect ? rect.left : popupPosRef.current.left,
+            initialTop: rect ? rect.top : popupPosRef.current.top,
+        };
+        hasUserMovedRef.current = true;
+        setIsMovingPopup(true);
+    }, []);
+
+    // Global drag pointer tracking for smooth movable popup
+    useEffect(() => {
+        if (!isMovingPopup) return;
+
+        const handlePointerMove = (e) => {
+            const deltaX = e.clientX - dragStartRef.current.startX;
+            const deltaY = e.clientY - dragStartRef.current.startY;
+
+            const popupEl = popupRef.current;
+            const popupWidth = popupEl?.offsetWidth || 340;
+            const popupHeight = popupEl?.offsetHeight || 300;
+
+            const margin = 10;
+            const minLeft = margin;
+            const maxLeft = Math.max(margin, window.innerWidth - popupWidth - margin);
+            const minTop = margin;
+            const maxTop = Math.max(margin, window.innerHeight - popupHeight - margin);
+
+            const nextLeft = Math.min(Math.max(dragStartRef.current.initialLeft + deltaX, minLeft), maxLeft);
+            const nextTop = Math.min(Math.max(dragStartRef.current.initialTop + deltaY, minTop), maxTop);
+
+            setPopupPos({ left: nextLeft, top: nextTop });
+        };
+
+        const handlePointerUp = () => {
+            setIsMovingPopup(false);
+        };
+
+        window.addEventListener("pointermove", handlePointerMove);
+        window.addEventListener("pointerup", handlePointerUp);
+        window.addEventListener("pointercancel", handlePointerUp);
+
+        return () => {
+            window.removeEventListener("pointermove", handlePointerMove);
+            window.removeEventListener("pointerup", handlePointerUp);
+            window.removeEventListener("pointercancel", handlePointerUp);
+        };
+    }, [isMovingPopup]);
 
     const popupVisibleRef = useRef(popupVisible);
     useEffect(() => {
@@ -445,48 +586,6 @@ function Reader() {
         };
     }, [pdfDoc, currentPage, scale]);
 
-    // Helper to extract reliable bounding rectangle
-    const getSelectionRect = (range, fallbackEl = null) => {
-        if (!range) return null;
-
-        // 1. Try client rects
-        const clientRects = range.getClientRects();
-        for (let i = 0; i < clientRects.length; i++) {
-            const r = clientRects[i];
-            if (r.width > 0 && r.height > 0) {
-                return r;
-            }
-        }
-
-        // 2. Try bounding client rect
-        const bRect = range.getBoundingClientRect();
-        if (bRect && (bRect.width > 0 || bRect.height > 0)) {
-            return bRect;
-        }
-
-        // 3. Fallback to start element (the specific text span)
-        if (fallbackEl?.getBoundingClientRect) {
-            const fRect = fallbackEl.getBoundingClientRect();
-            if (fRect.width > 0 || fRect.height > 0) {
-                return fRect;
-            }
-        }
-
-        // 4. Fallback to commonAncestorContainer element
-        let elem = range.commonAncestorContainer;
-        if (elem?.nodeType === Node.TEXT_NODE) {
-            elem = elem.parentElement;
-        }
-        if (elem?.getBoundingClientRect) {
-            const elemRect = elem.getBoundingClientRect();
-            if (elemRect.width > 0 || elemRect.height > 0) {
-                return elemRect;
-            }
-        }
-
-        return bRect;
-    };
-
     // References for latest-request and closing protection
     const abortControllerRef = useRef(null);
     const latestRequestIdRef = useRef(0);
@@ -494,10 +593,13 @@ function Reader() {
     const closingTimeoutRef = useRef(null);
 
     // Close popup: resets all state, clears selection, and aborts pending lookups
+    // Close popup: resets all state, clears selection, and aborts pending lookups
     const closePopup = useCallback(() => {
         isClosingRef.current = true;
         activeWordRef.current = "";
         activeSentenceRef.current = "";
+        hasUserMovedRef.current = false;
+        setIsMovingPopup(false);
         if (closingTimeoutRef.current) {
             clearTimeout(closingTimeoutRef.current);
         }
@@ -541,6 +643,11 @@ function Reader() {
             return;
         }
 
+        // CRITICAL: Do NOT open or calculate popup while user is actively dragging pointer or touch!
+        if (isPointerActiveRef.current || isTouchActiveRef.current) {
+            return;
+        }
+
         const selection = window.getSelection();
         if (!selection) {
             return;
@@ -573,17 +680,15 @@ function Reader() {
             : containerNode?.parentElement;
 
         // Never trigger selection from inside the popup
-        if (targetElement?.closest(".word-popup") || startEl?.closest(".word-popup")) {
+        if (targetElement?.closest(".word-popup") || startEl?.closest(".word-popup") || endEl?.closest(".word-popup")) {
             return;
         }
 
-        // Verify selection is inside PDF TextLayer or PDF reader page (support cross-span selections)
+        // Verify selection is inside PDF TextLayer (strictly ignore empty or non-PDF selections)
         const inTextLayer = Boolean(
-            targetElement?.closest(".textLayer") ||
-            targetElement?.closest(".pdf-page-wrapper") ||
             startEl?.closest(".textLayer") ||
             endEl?.closest(".textLayer") ||
-            startEl?.closest(".pdf-page-wrapper")
+            targetElement?.closest(".textLayer")
         );
 
         if (!inTextLayer) {
@@ -624,25 +729,6 @@ function Reader() {
             return;
         }
 
-        const rect = getSelectionRect(range, startEl);
-        if (!rect) {
-            return;
-        }
-
-        // Temporary debug logs for classification verification
-        if (process.env.NODE_ENV !== "production") {
-            console.log("[ReadLingo] Selection classified:", {
-                rawText,
-                sanitized,
-                isSingleWord,
-                isSentence,
-                cleanedWord: isSingleWord ? cleanedWord : null,
-                cleanedSentence: isSentence ? cleanedSentence : null,
-                rect,
-                targetElement,
-            });
-        }
-
         // Handle Single English Word Selection
         if (isSingleWord) {
             if (activeWordRef.current === cleanedWord && popupVisibleRef.current && popupTypeRef.current === "word") {
@@ -651,19 +737,8 @@ function Reader() {
             activeWordRef.current = cleanedWord;
             activeSentenceRef.current = "";
 
-            const popupWidth = Math.min(340, window.innerWidth - 32);
-            let left = rect.left + rect.width / 2 - popupWidth / 2;
-            left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
-
-            const estimatedHeight = 310;
-            let top = rect.bottom + 10;
-            if (top + estimatedHeight > window.innerHeight) {
-                if (rect.top - estimatedHeight - 10 > 10) {
-                    top = rect.top - estimatedHeight - 10;
-                } else {
-                    top = Math.max(16, window.innerHeight - estimatedHeight - 16);
-                }
-            }
+            hasUserMovedRef.current = false;
+            const newPos = computeInitialPopupPosition(range, "word", startEl);
 
             stopPronunciation();
             setPopupType("word");
@@ -672,7 +747,7 @@ function Reader() {
             setSentenceData(null);
             setSentenceError("");
             setSentenceLoading(false);
-            setPopupPos({ top, left });
+            setPopupPos(newPos);
             setPopupVisible(true);
             setPopupLoading(true);
             setPopupError("");
@@ -715,19 +790,8 @@ function Reader() {
             activeSentenceRef.current = cleanedSentence;
             activeWordRef.current = "";
 
-            const popupWidth = Math.min(390, window.innerWidth - 32);
-            let left = rect.left + rect.width / 2 - popupWidth / 2;
-            left = Math.max(16, Math.min(left, window.innerWidth - popupWidth - 16));
-
-            const estimatedHeight = 260;
-            let top = rect.bottom + 10;
-            if (top + estimatedHeight > window.innerHeight) {
-                if (rect.top - estimatedHeight - 10 > 10) {
-                    top = rect.top - estimatedHeight - 10;
-                } else {
-                    top = Math.max(16, window.innerHeight - estimatedHeight - 16);
-                }
-            }
+            hasUserMovedRef.current = false;
+            const newPos = computeInitialPopupPosition(range, "sentence", startEl);
 
             stopPronunciation();
             setPopupType("sentence");
@@ -740,7 +804,7 @@ function Reader() {
             setSentenceLoading(true);
             setSentenceError("");
             setSentenceData(null);
-            setPopupPos({ top, left });
+            setPopupPos(newPos);
             setPopupVisible(true);
 
             if (abortControllerRef.current) {
@@ -766,7 +830,7 @@ function Reader() {
 
     const selectionTimeoutRef = useRef(null);
 
-    // Document-level selection listeners: mouseup (desktop), touchend (mobile), and selectionchange (debounced)
+    // Document-level selection listeners: mouseup (desktop), touchend (mobile), and debounced selectionchange
     useEffect(() => {
         const scheduleSelection = (delay) => {
             if (isClosingRef.current) return;
@@ -776,43 +840,87 @@ function Reader() {
             selectionTimeoutRef.current = setTimeout(handleSelection, delay);
         };
 
-        const onMouseUp = (e) => {
+        const onMouseDown = (e) => {
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
             }
-            scheduleSelection(30);
+            isPointerActiveRef.current = true;
+            if (selectionTimeoutRef.current) {
+                clearTimeout(selectionTimeoutRef.current);
+            }
+            // Dismiss previous popup when user starts selecting new text in the PDF reader
+            if (popupVisibleRef.current && (e.target.closest(".textLayer") || e.target.closest(".pdf-page-wrapper"))) {
+                closePopup();
+            }
+        };
+
+        const onMouseUp = (e) => {
+            isPointerActiveRef.current = false;
+            if (popupRef.current && popupRef.current.contains(e.target)) {
+                return;
+            }
+            scheduleSelection(90);
+        };
+
+        const onTouchStart = (e) => {
+            if (popupRef.current && popupRef.current.contains(e.target)) {
+                return;
+            }
+            isTouchActiveRef.current = true;
+            if (selectionTimeoutRef.current) {
+                clearTimeout(selectionTimeoutRef.current);
+            }
+            // Dismiss previous popup when user starts touching PDF reader to select text
+            if (popupVisibleRef.current && (e.target.closest(".textLayer") || e.target.closest(".pdf-page-wrapper"))) {
+                closePopup();
+            }
         };
 
         const onTouchEnd = (e) => {
+            isTouchActiveRef.current = false;
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
             }
-            // Allow 100ms for mobile selection handles to settle
-            scheduleSelection(100);
+            // Allow 120ms for mobile selection handles to settle
+            scheduleSelection(120);
         };
 
         const onSelectionChange = () => {
+            // CRITICAL: Do NOT schedule or open popup while user is actively dragging pointer or touch!
+            if (isPointerActiveRef.current || isTouchActiveRef.current) {
+                if (selectionTimeoutRef.current) {
+                    clearTimeout(selectionTimeoutRef.current);
+                }
+                return;
+            }
+
             const selection = window.getSelection();
             if (!selection || selection.isCollapsed) return;
             const text = selection.toString().trim();
             if (!text) return;
 
-            scheduleSelection(150);
+            scheduleSelection(200);
         };
 
+        document.addEventListener("mousedown", onMouseDown);
         document.addEventListener("mouseup", onMouseUp);
+        document.addEventListener("touchstart", onTouchStart, { passive: true });
         document.addEventListener("touchend", onTouchEnd);
+        document.addEventListener("touchcancel", onTouchEnd);
         document.addEventListener("selectionchange", onSelectionChange);
 
         return () => {
+            document.removeEventListener("mousedown", onMouseDown);
             document.removeEventListener("mouseup", onMouseUp);
+            document.removeEventListener("touchstart", onTouchStart);
             document.removeEventListener("touchend", onTouchEnd);
+            document.removeEventListener("touchcancel", onTouchEnd);
             document.removeEventListener("selectionchange", onSelectionChange);
             if (selectionTimeoutRef.current) {
                 clearTimeout(selectionTimeoutRef.current);
             }
         };
-    }, [handleSelection]);
+    }, [handleSelection, closePopup]);
 
     // Close popup on Escape key press
     useEffect(() => {
@@ -827,29 +935,30 @@ function Reader() {
         };
     }, [popupVisible, closePopup]);
 
-    // Close popup on window resize
+    // Keep popup safely within viewport on window resize
     useEffect(() => {
         const handleResize = () => {
-            if (popupVisible) closePopup();
+            if (!popupVisibleRef.current || !popupRef.current) return;
+            const popupEl = popupRef.current;
+            const popupWidth = popupEl.offsetWidth || 340;
+            const popupHeight = popupEl.offsetHeight || 300;
+            const margin = 10;
+            setPopupPos((prev) => ({
+                left: Math.max(margin, Math.min(prev.left, window.innerWidth - popupWidth - margin)),
+                top: Math.max(margin, Math.min(prev.top, window.innerHeight - popupHeight - margin)),
+            }));
         };
+
         window.addEventListener("resize", handleResize);
         return () => {
             window.removeEventListener("resize", handleResize);
         };
-    }, [popupVisible, closePopup]);
+    }, []);
 
     // Close popup on outside click
     useEffect(() => {
         const handleClickOutside = (e) => {
             if (popupRef.current && !popupRef.current.contains(e.target)) {
-                // Do NOT close if tapping inside PDF textLayer or PDF page wrapper (user might be selecting a word!)
-                if (
-                    e.target.closest(".textLayer") ||
-                    e.target.closest(".pdf-page-wrapper") ||
-                    e.target.tagName === "CANVAS"
-                ) {
-                    return;
-                }
                 closePopup();
             }
         };
@@ -888,24 +997,21 @@ function Reader() {
 
     const handlePrevPage = () => {
         if (currentPage > 1) {
-            stopPronunciation();
-            setPopupVisible(false);
+            closePopup();
             setCurrentPage((prev) => prev - 1);
         }
     };
 
     const handleNextPage = () => {
         if (currentPage < totalPages) {
-            stopPronunciation();
-            setPopupVisible(false);
+            closePopup();
             setCurrentPage((prev) => prev + 1);
         }
     };
 
     // Shared zoom handlers through discrete levels: 60, 70, 80, 90, 100, 110, 120
     const handleZoomIn = () => {
-        stopPronunciation();
-        setPopupVisible(false);
+        closePopup();
         setScale((prev) => {
             const rounded = Number(prev.toFixed(1));
             const currentIndex = ZOOM_LEVELS.findIndex((lvl) => Math.abs(lvl - rounded) < 0.05);
@@ -918,8 +1024,7 @@ function Reader() {
     };
 
     const handleZoomOut = () => {
-        stopPronunciation();
-        setPopupVisible(false);
+        closePopup();
         setScale((prev) => {
             const rounded = Number(prev.toFixed(1));
             const currentIndex = ZOOM_LEVELS.findIndex((lvl) => Math.abs(lvl - rounded) < 0.05);
@@ -933,8 +1038,7 @@ function Reader() {
     };
 
     const handleResetZoom = () => {
-        stopPronunciation();
-        setPopupVisible(false);
+        closePopup();
         setScale(DEFAULT_ZOOM);
     };
 
@@ -972,6 +1076,11 @@ function Reader() {
                     <Link to="/vocabulary" className="reader-btn-secondary">
                         <span>📚</span>
                         <span>Vocabulary</span>
+                    </Link>
+
+                    <Link to="/practice" className="reader-btn-secondary">
+                        <span>🎯</span>
+                        <span>Practice</span>
                     </Link>
 
                     {currentUser && (
@@ -1132,7 +1241,7 @@ function Reader() {
             {popupVisible && (
                 <div
                     ref={popupRef}
-                    className={`word-popup ${popupType === "sentence" ? "sentence-popup" : ""}`}
+                    className={`word-popup ${popupType === "sentence" ? "sentence-popup" : ""} ${isMovingPopup ? "is-dragging" : ""}`}
                     style={{
                         position: "fixed",
                         top: `${popupPos.top}px`,
@@ -1140,9 +1249,22 @@ function Reader() {
                         zIndex: 99999,
                     }}
                 >
+                    {/* Clear drag handle pill at the top */}
+                    <div
+                        className="popup-drag-bar"
+                        title="Drag to reposition popup"
+                        aria-label="Drag popup"
+                        onPointerDown={handleDragPointerDown}
+                    >
+                        <span className="popup-drag-handle" />
+                    </div>
+
                     {popupType === "word" ? (
                         <>
-                            <div className="popup-header">
+                            <div
+                                className="popup-header"
+                                onPointerDown={handleDragPointerDown}
+                            >
                                 <div className="popup-word-title">
                                     <span className="popup-word-text">{wordData?.word || selectedWord}</span>
                                     {isSpeechSupported && (
@@ -1150,6 +1272,7 @@ function Reader() {
                                             type="button"
                                             className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
                                             onClick={togglePronunciation}
+                                            onPointerDown={(e) => e.stopPropagation()}
                                             onMouseDown={(e) => e.stopPropagation()}
                                             onTouchEnd={(e) => e.stopPropagation()}
                                             title={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
@@ -1179,9 +1302,8 @@ function Reader() {
                                 <button
                                     type="button"
                                     className="popup-close-btn"
-                                    onMouseDown={(e) => {
-                                        e.stopPropagation();
-                                    }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         closePopup();
@@ -1270,7 +1392,10 @@ function Reader() {
                     ) : (
                         <>
                             {/* Sentence Understanding Popup */}
-                            <div className="popup-header">
+                            <div
+                                className="popup-header"
+                                onPointerDown={handleDragPointerDown}
+                            >
                                 <div className="popup-sentence-title">
                                     <span className="popup-tag-badge">Sentence</span>
                                     {isSpeechSupported && (
@@ -1278,6 +1403,7 @@ function Reader() {
                                             type="button"
                                             className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
                                             onClick={togglePronunciation}
+                                            onPointerDown={(e) => e.stopPropagation()}
                                             onMouseDown={(e) => e.stopPropagation()}
                                             onTouchEnd={(e) => e.stopPropagation()}
                                             title={isSpeaking ? "Stop pronunciation" : "Pronounce sentence"}
@@ -1304,9 +1430,8 @@ function Reader() {
                                 <button
                                     type="button"
                                     className="popup-close-btn"
-                                    onMouseDown={(e) => {
-                                        e.stopPropagation();
-                                    }}
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
                                     onClick={(e) => {
                                         e.stopPropagation();
                                         closePopup();

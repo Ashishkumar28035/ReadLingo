@@ -3,6 +3,7 @@ import Login from './pages/Login';
 import Signup from './pages/Signup';
 import Reader from './pages/Reader';
 import Vocabulary from './pages/Vocabulary';
+import Practice from './pages/Practice';
 import ProtectedRoute from './components/ProtectedRoute';
 
 function App() {
@@ -25,6 +26,14 @@ function App() {
           element={
             <ProtectedRoute>
               <Vocabulary />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/practice"
+          element={
+            <ProtectedRoute>
+              <Practice />
             </ProtectedRoute>
           }
         />

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
+import helmet from 'helmet';
 import authRoutes from './routes/authRoutes.js';
 import wordRoutes from './routes/wordRoutes.js';
 import vocabularyRoutes from './routes/vocabularyRoutes.js';
@@ -12,14 +13,21 @@ const app = express();
 // Trust reverse proxies (Cloudflare, Render, Railway, Nginx)
 app.set('trust proxy', 1);
 
-// Security Headers
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.setHeader('X-XSS-Protection', '0');
-  next();
-});
+// Standard Security Headers for Express JSON API
+app.use(
+  helmet({
+    contentSecurityPolicy: false, // Managed at frontend host (Vercel) to avoid breaking PDF.js blobs/workers
+    crossOriginResourcePolicy: { policy: 'cross-origin' }, // Allows cross-origin frontend API consumption
+    crossOriginEmbedderPolicy: false,
+    frameguard: { action: 'deny' },
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+    hsts: {
+      maxAge: 15552000, // 180 days
+      includeSubDomains: false, // Safely omitted pending multi-domain confirmation
+      preload: false,
+    },
+  })
+);
 
 // Middleware
 const allowedOrigin = process.env.CLIENT_URL || 'http://localhost:5173';

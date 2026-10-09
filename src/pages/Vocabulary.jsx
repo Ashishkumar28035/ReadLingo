@@ -126,6 +126,10 @@ function Vocabulary() {
                         <span>◀</span>
                         <span>Back to Reader</span>
                     </Link>
+                    <Link to="/practice" className="reader-btn-secondary">
+                        <span>🎯</span>
+                        <span>Practice</span>
+                    </Link>
                     {currentUser && (
                         <div
                             className="reader-user-badge"

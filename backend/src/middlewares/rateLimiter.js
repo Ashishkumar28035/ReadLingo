@@ -55,9 +55,30 @@ export function createRateLimiter({ windowMs = 60 * 1000, max = 60, message = 'T
   };
 }
 
+/**
+ * Authentication Rate Limiter
+ *
+ * Target: 10 attempts per 15-minute window per IP in production.
+ * Test isolation: 2000 attempts per 15-minute window in 'test' mode to prevent flaky suites.
+ *
+ * Architecture & Security Notes:
+ * 1. In-memory limitations:
+ *    - This limiter maintains state in a Node.js process-local Map.
+ *    - Server restarts or deployments reset counters immediately.
+ *    - In multi-instance or auto-scaling clusters (e.g. multi-dyno/multi-container),
+ *      requests routed to different instances have separate counters.
+ *    - For distributed scaling, migrate to a shared Redis store (e.g. rate-limit-redis).
+ * 2. IP-based throttling vs. Account Lockout:
+ *    - We intentionally throttle by client IP rather than locking out the user account.
+ *    - Global account lockouts keyed solely on target email enable Denial-of-Service (DoS)
+ *      attacks where an adversary deliberately triggers lockouts on arbitrary users.
+ * 3. Controlled response:
+ *    - Returns HTTP 429 with generic message and Retry-After header.
+ *    - Never reveals whether an email account exists in the system.
+ */
 export const authLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'test' ? 2000 : 60,
+  max: process.env.NODE_ENV === 'test' ? 2000 : 10,
   message: 'Too many authentication attempts. Please try again after 15 minutes.',
 });
 

@@ -4,11 +4,16 @@ dotenv.config();
 import mongoose from 'mongoose';
 import app from './app.js';
 import { connectDB } from './config/db.js';
+import { validateJwtSecret } from './config/jwtConfig.js';
 
 const PORT = process.env.PORT || 5000;
 
-if (!process.env.JWT_SECRET) {
-  console.warn('WARNING: JWT_SECRET environment variable is missing. Authentication will fail.');
+// Validate JWT secret strength before initializing services
+try {
+  validateJwtSecret(process.env.JWT_SECRET, process.env.NODE_ENV);
+} catch (error) {
+  console.error(`[FATAL CONFIGURATION ERROR] ${error.message}`);
+  process.exit(1);
 }
 
 // Connect to MongoDB

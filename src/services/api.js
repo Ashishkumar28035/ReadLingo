@@ -115,3 +115,11 @@ export function translateSentence(text, options = {}) {
         ...options,
     });
 }
+
+export function checkSentenceGrammar(text, targetWord, options = {}) {
+    return request("/words/check-grammar", {
+        method: "POST",
+        body: JSON.stringify({ text, targetWord }),
+        ...options,
+    });
+}

@@ -7,8 +7,10 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 import User from '../src/models/User.js';
+import Vocabulary from '../src/models/Vocabulary.js';
 import { signup, login, getMe } from '../src/controllers/authController.js';
 import { protect } from '../src/middlewares/authMiddleware.js';
+import { saveWord, getSavedWords } from '../src/controllers/vocabularyController.js';
 
 // Helper to simulate Express req/res
 function createMockReqRes({ body = {}, headers = {}, params = {}, query = {}, user = null } = {}) {
@@ -304,5 +306,40 @@ describe('Authentication Security & Isolation Suite', () => {
     const s2Valid = await bcrypt.compare(COMMON_PASS, docS2.password);
     assert.ok(s1Valid, 'Password S1 must match hash');
     assert.ok(s2Valid, 'Password S2 must match hash');
+  });
+
+  test('PHASE 12: User vocabulary isolation (prevent cross-user vocabulary leaks)', async () => {
+    // 1. User A saves a private word
+    const uniqueWordA = `isolation-${Date.now()}`;
+    const mockSaveA = createMockReqRes({
+      body: { word: uniqueWordA, definition: 'Unique to User A', hindiMeaning: 'एकाकी' },
+      user: { _id: userAId },
+    });
+    await saveWord(mockSaveA.req, mockSaveA.res);
+    assert.equal(mockSaveA.getStatus(), 201);
+
+    // 2. User B requests saved vocabulary
+    const mockGetB = createMockReqRes({
+      user: { _id: userBId },
+    });
+    await getSavedWords(mockGetB.req, mockGetB.res);
+    assert.equal(mockGetB.getStatus(), 200);
+    const wordsB = mockGetB.getData();
+
+    // Verify User A's word is NOT returned in User B's vocabulary list
+    const leakedWord = wordsB.find((w) => w.word === uniqueWordA);
+    assert.strictEqual(leakedWord, undefined, 'User B must not see User A vocabulary');
+
+    // 3. User A requests saved vocabulary -> MUST include the word
+    const mockGetA = createMockReqRes({
+      user: { _id: userAId },
+    });
+    await getSavedWords(mockGetA.req, mockGetA.res);
+    assert.equal(mockGetA.getStatus(), 200);
+    const wordsA = mockGetA.getData();
+    assert.ok(wordsA.some((w) => w.word === uniqueWordA), 'User A must see their own vocabulary');
+
+    // Cleanup the saved word
+    await Vocabulary.deleteMany({ word: uniqueWordA });
   });
 });
