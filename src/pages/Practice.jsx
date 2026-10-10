@@ -63,6 +63,8 @@ function Practice() {
 
     // Action lock ref to prevent rapid double-clicks from skipping questions or double counting
     const isActionLockedRef = useRef(false);
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+    const headerRef = useRef(null);
 
     // Logout handler
     const handleLogout = () => {
@@ -71,6 +73,22 @@ function Practice() {
         setCurrentUser(null);
         navigate("/login", { replace: true });
     };
+
+    // Close mobile navigation menu on outside click or tap
+    useEffect(() => {
+        if (!mobileMenuOpen) return;
+        const handleOutsideClick = (e) => {
+            if (headerRef.current && !headerRef.current.contains(e.target)) {
+                setMobileMenuOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handleOutsideClick);
+        document.addEventListener("touchstart", handleOutsideClick);
+        return () => {
+            document.removeEventListener("mousedown", handleOutsideClick);
+            document.removeEventListener("touchstart", handleOutsideClick);
+        };
+    }, [mobileMenuOpen]);
 
     // Load user and saved vocabulary on mount
     const loadVocabulary = useCallback(async () => {
@@ -570,18 +588,42 @@ function Practice() {
     return (
         <div className="reader-page">
             {/* Header / Navigation */}
-            <header className="reader-header">
-                <Link to="/reader" className="reader-brand">
-                    <span>📖</span>
-                    <span>ReadLingo</span>
-                </Link>
+            <header className="reader-header" ref={headerRef}>
+                <div className="reader-header-main">
+                    <Link
+                        to="/reader"
+                        className="reader-brand"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
+                        <span>📖</span>
+                        <span>ReadLingo</span>
+                    </Link>
 
-                <div className="reader-actions">
-                    <Link to="/reader" className="reader-btn-secondary">
+                    <button
+                        type="button"
+                        className="reader-mobile-menu-btn"
+                        onClick={() => setMobileMenuOpen((prev) => !prev)}
+                        aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+                        aria-expanded={mobileMenuOpen}
+                    >
+                        <span className="hamburger-icon">{mobileMenuOpen ? "✕" : "☰"}</span>
+                    </button>
+                </div>
+
+                <div className={`reader-actions ${mobileMenuOpen ? "mobile-open" : ""}`}>
+                    <Link
+                        to="/reader"
+                        className="reader-btn-secondary"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
                         <span>📖</span>
                         <span>Reader</span>
                     </Link>
-                    <Link to="/vocabulary" className="reader-btn-secondary">
+                    <Link
+                        to="/vocabulary"
+                        className="reader-btn-secondary"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
                         <span>📚</span>
                         <span>Vocabulary</span>
                     </Link>
@@ -598,7 +640,10 @@ function Practice() {
                     )}
                     <button
                         type="button"
-                        onClick={handleLogout}
+                        onClick={() => {
+                            setMobileMenuOpen(false);
+                            handleLogout();
+                        }}
                         className="reader-btn-secondary reader-btn-logout"
                     >
                         Logout

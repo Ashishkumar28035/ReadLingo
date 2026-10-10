@@ -91,6 +91,13 @@ function Reader() {
     const textLayerRef = useRef(null);
     const renderTaskRef = useRef(null);
     const popupRef = useRef(null);
+    const readerContentRef = useRef(null);
+    const headerRef = useRef(null);
+
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+    const [containerWidth, setContainerWidth] = useState(() =>
+        typeof window !== "undefined" ? window.innerWidth : 1024
+    );
 
     const [pdfDoc, setPdfDoc] = useState(null);
     const [bookTitle, setBookTitle] = useState("");
@@ -493,7 +500,45 @@ function Reader() {
         if (file) loadPdfFile(file);
     };
 
-    // Render the current page on canvas + textLayer with devicePixelRatio support
+    // Monitor available container width for responsive scaling on mobile and desktop
+    useEffect(() => {
+        let timeoutId = null;
+        const updateWidth = () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+                const el = readerContentRef.current;
+                const w = el ? el.clientWidth : window.innerWidth;
+                if (w > 0) {
+                    setContainerWidth(w);
+                }
+            }, 80);
+        };
+
+        updateWidth();
+        window.addEventListener("resize", updateWidth);
+        return () => {
+            if (timeoutId) clearTimeout(timeoutId);
+            window.removeEventListener("resize", updateWidth);
+        };
+    }, []);
+
+    // Close mobile navigation menu on outside click or tap
+    useEffect(() => {
+        if (!mobileMenuOpen) return;
+        const handleOutsideClick = (e) => {
+            if (headerRef.current && !headerRef.current.contains(e.target)) {
+                setMobileMenuOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handleOutsideClick);
+        document.addEventListener("touchstart", handleOutsideClick);
+        return () => {
+            document.removeEventListener("mousedown", handleOutsideClick);
+            document.removeEventListener("touchstart", handleOutsideClick);
+        };
+    }, [mobileMenuOpen]);
+
+    // Render the current page on canvas + textLayer with devicePixelRatio support and responsive auto-fit scaling
     useEffect(() => {
         let isCancelled = false;
 
@@ -515,7 +560,18 @@ function Reader() {
                 // Cap outputScale to 2.5 to avoid excessive memory on extreme screens
                 const outputScale = Math.min(Math.max(dpr, 1), 2.5);
 
-                const viewport = page.getViewport({ scale });
+                // Calculate available width inside reader container
+                const padding = containerWidth <= 480 ? 20 : containerWidth <= 768 ? 28 : 36;
+                const availableWidth = Math.max(260, containerWidth - padding);
+
+                // Unscaled natural dimensions (scale: 1.0)
+                const unscaledViewport = page.getViewport({ scale: 1.0 });
+
+                // Fit-to-width base scale (capped at 1.0 on large screens so desktop layout is untouched)
+                const baseScale = Math.min(1.0, availableWidth / unscaledViewport.width);
+                const effectiveScale = Number((baseScale * scale).toFixed(3));
+
+                const viewport = page.getViewport({ scale: effectiveScale });
                 const cssWidth = Math.floor(viewport.width);
                 const cssHeight = Math.floor(viewport.height);
 
@@ -584,7 +640,7 @@ function Reader() {
                 renderTaskRef.current = null;
             }
         };
-    }, [pdfDoc, currentPage, scale]);
+    }, [pdfDoc, currentPage, scale, containerWidth]);
 
     // References for latest-request and closing protection
     const abortControllerRef = useRef(null);
@@ -1045,40 +1101,70 @@ function Reader() {
     return (
         <div className="reader-page">
             {/* Top Navigation */}
-            <header className="reader-header">
-                <Link to="/reader" className="reader-brand">
-                    <span>📖</span>
-                    <span>ReadLingo</span>
-                </Link>
+            <header className="reader-header" ref={headerRef}>
+                <div className="reader-header-main">
+                    <Link
+                        to="/reader"
+                        className="reader-brand"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
+                        <span>📖</span>
+                        <span>ReadLingo</span>
+                    </Link>
 
-                {bookTitle && (
-                    <div className="reader-book-title" title={bookTitle}>
-                        {bookTitle}
-                    </div>
-                )}
+                    {bookTitle && (
+                        <div className="reader-book-title" title={bookTitle}>
+                            {bookTitle}
+                        </div>
+                    )}
 
-                <div className="reader-actions">
+                    <button
+                        type="button"
+                        className="reader-mobile-menu-btn"
+                        onClick={() => setMobileMenuOpen((prev) => !prev)}
+                        aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+                        aria-expanded={mobileMenuOpen}
+                    >
+                        <span className="hamburger-icon">{mobileMenuOpen ? "✕" : "☰"}</span>
+                    </button>
+                </div>
+
+                <div className={`reader-actions ${mobileMenuOpen ? "mobile-open" : ""}`}>
                     <input
                         ref={fileInputRef}
                         type="file"
                         accept="application/pdf"
-                        onChange={handleFileSelect}
+                        onChange={(e) => {
+                            setMobileMenuOpen(false);
+                            handleFileSelect(e);
+                        }}
                         style={{ display: "none" }}
                     />
                     <button
                         type="button"
                         className="reader-btn-primary"
-                        onClick={() => fileInputRef.current?.click()}
+                        onClick={() => {
+                            setMobileMenuOpen(false);
+                            fileInputRef.current?.click();
+                        }}
                     >
                         {pdfDoc ? "Upload Another PDF" : "Upload PDF"}
                     </button>
 
-                    <Link to="/vocabulary" className="reader-btn-secondary">
+                    <Link
+                        to="/vocabulary"
+                        className="reader-btn-secondary"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
                         <span>📚</span>
                         <span>Vocabulary</span>
                     </Link>
 
-                    <Link to="/practice" className="reader-btn-secondary">
+                    <Link
+                        to="/practice"
+                        className="reader-btn-secondary"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
                         <span>🎯</span>
                         <span>Practice</span>
                     </Link>
@@ -1097,7 +1183,10 @@ function Reader() {
 
                     <button
                         type="button"
-                        onClick={handleLogout}
+                        onClick={() => {
+                            setMobileMenuOpen(false);
+                            handleLogout();
+                        }}
                         className="reader-btn-secondary reader-btn-logout"
                     >
                         Logout
@@ -1107,7 +1196,7 @@ function Reader() {
 
             {/* Error Message */}
             {error && (
-                <div style={{ padding: "16px 24px 0", maxWidth: "680px", margin: "0 auto", width: "100%" }}>
+                <div style={{ padding: "16px 24px 0", maxWidth: "680px", margin: "0 auto", width: "100%", boxSizing: "border-box" }}>
                     <div className="auth-error" role="alert">
                         <span className="auth-error-icon">⚠️</span>
                         <span>{error}</span>
@@ -1181,7 +1270,7 @@ function Reader() {
             )}
 
             {/* Reader Main Content */}
-            <main className="reader-content">
+            <main className="reader-content" ref={readerContentRef}>
                 {loading && (
                     <div className="reader-loading-state">
                         <div className="btn-spinner large" />

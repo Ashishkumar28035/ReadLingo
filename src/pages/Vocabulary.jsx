@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { getVocabulary, deleteVocabulary, getMe } from "../services/api";
 
@@ -37,6 +37,8 @@ function Vocabulary() {
     const [error, setError] = useState("");
     const [deletingId, setDeletingId] = useState(null);
     const [successMessage, setSuccessMessage] = useState("");
+    const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+    const headerRef = useRef(null);
 
     const [currentUser, setCurrentUser] = useState(() => {
         try {
@@ -52,6 +54,22 @@ function Vocabulary() {
         setCurrentUser(null);
         navigate("/login", { replace: true });
     };
+
+    // Close mobile navigation menu on outside click or tap
+    useEffect(() => {
+        if (!mobileMenuOpen) return;
+        const handleOutsideClick = (e) => {
+            if (headerRef.current && !headerRef.current.contains(e.target)) {
+                setMobileMenuOpen(false);
+            }
+        };
+        document.addEventListener("mousedown", handleOutsideClick);
+        document.addEventListener("touchstart", handleOutsideClick);
+        return () => {
+            document.removeEventListener("mousedown", handleOutsideClick);
+            document.removeEventListener("touchstart", handleOutsideClick);
+        };
+    }, [mobileMenuOpen]);
 
     useEffect(() => {
         let isMounted = true;
@@ -115,18 +133,42 @@ function Vocabulary() {
     return (
         <div className="reader-page">
             {/* Header */}
-            <header className="reader-header">
-                <Link to="/reader" className="reader-brand">
-                    <span>📖</span>
-                    <span>ReadLingo</span>
-                </Link>
+            <header className="reader-header" ref={headerRef}>
+                <div className="reader-header-main">
+                    <Link
+                        to="/reader"
+                        className="reader-brand"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
+                        <span>📖</span>
+                        <span>ReadLingo</span>
+                    </Link>
 
-                <div className="reader-actions">
-                    <Link to="/reader" className="reader-btn-secondary">
+                    <button
+                        type="button"
+                        className="reader-mobile-menu-btn"
+                        onClick={() => setMobileMenuOpen((prev) => !prev)}
+                        aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+                        aria-expanded={mobileMenuOpen}
+                    >
+                        <span className="hamburger-icon">{mobileMenuOpen ? "✕" : "☰"}</span>
+                    </button>
+                </div>
+
+                <div className={`reader-actions ${mobileMenuOpen ? "mobile-open" : ""}`}>
+                    <Link
+                        to="/reader"
+                        className="reader-btn-secondary"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
                         <span>◀</span>
                         <span>Back to Reader</span>
                     </Link>
-                    <Link to="/practice" className="reader-btn-secondary">
+                    <Link
+                        to="/practice"
+                        className="reader-btn-secondary"
+                        onClick={() => setMobileMenuOpen(false)}
+                    >
                         <span>🎯</span>
                         <span>Practice</span>
                     </Link>
@@ -143,7 +185,10 @@ function Vocabulary() {
                     )}
                     <button
                         type="button"
-                        onClick={handleLogout}
+                        onClick={() => {
+                            setMobileMenuOpen(false);
+                            handleLogout();
+                        }}
                         className="reader-btn-secondary reader-btn-logout"
                     >
                         Logout
