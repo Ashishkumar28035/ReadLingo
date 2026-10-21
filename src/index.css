@@ -674,6 +674,187 @@ a {
   font-weight: 600;
 }
 
+/* Reading Progress & Bookmark Styles */
+.toolbar-btn.bookmark-btn {
+  gap: 6px;
+  border-color: var(--border-subtle);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+}
+
+.toolbar-btn.bookmark-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-light);
+}
+
+.toolbar-btn.bookmark-btn.bookmarked {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent-text);
+  font-weight: 700;
+}
+
+.toolbar-btn.bookmark-btn.saved-success {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success-text);
+  font-weight: 700;
+}
+
+.toolbar-btn.jump-bookmark-btn {
+  background: var(--bg-surface);
+  border: 1px dashed var(--accent);
+  color: var(--accent-text);
+  font-size: 12px;
+  padding: 5px 10px;
+}
+
+.toolbar-btn.jump-bookmark-btn:hover {
+  background: var(--accent-light);
+  border-style: solid;
+}
+
+/* Resume Reading Banner */
+.reader-resume-banner {
+  max-width: 820px;
+  width: calc(100% - 32px);
+  margin: 14px auto 0;
+  padding: 12px 18px;
+  background: linear-gradient(135deg, #f0fdf4 0%, #ecfdf5 100%);
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  box-shadow: var(--shadow-sm);
+  box-sizing: border-box;
+}
+
+.resume-banner-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--success-text);
+  font-size: 14px;
+}
+
+.resume-banner-icon {
+  font-size: 20px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.resume-banner-text strong {
+  color: #064e3b;
+}
+
+.resume-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.resume-btn-confirm {
+  background: #059669;
+  color: #ffffff;
+  border: none;
+  border-radius: var(--radius-md);
+  padding: 8px 16px;
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.resume-btn-confirm:hover {
+  background: #047857;
+}
+
+.resume-btn-dismiss {
+  background: transparent;
+  border: 1px solid rgba(6, 95, 70, 0.25);
+  color: var(--success-text);
+  border-radius: var(--radius-md);
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+.resume-btn-dismiss:hover {
+  background: rgba(6, 95, 70, 0.08);
+}
+
+/* Toast Notifications */
+.reader-toast-notification {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: var(--radius-md);
+  font-size: 13.5px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+}
+
+.reader-toast-notification.success {
+  background: #065f46;
+  color: #ffffff;
+}
+
+.reader-toast-notification.error {
+  background: #991b1b;
+  color: #ffffff;
+}
+
+.reader-toast-notification .toast-icon {
+  font-size: 16px;
+  font-weight: bold;
+}
+
+@media (max-width: 640px) {
+  .reader-resume-banner {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 12px 14px;
+  }
+
+  .resume-banner-actions {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .resume-btn-confirm,
+  .resume-btn-dismiss {
+    width: 100%;
+    justify-content: center;
+    text-align: center;
+  }
+
+  .reader-toast-notification {
+    left: 16px;
+    right: 16px;
+    bottom: 16px;
+    text-align: center;
+    justify-content: center;
+  }
+}
+
 /* ==========================================================================
    Reader Main Content & PDF View
    ========================================================================== */

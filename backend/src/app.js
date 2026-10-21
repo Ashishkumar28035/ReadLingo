@@ -5,6 +5,7 @@ import helmet from 'helmet';
 import authRoutes from './routes/authRoutes.js';
 import wordRoutes from './routes/wordRoutes.js';
 import vocabularyRoutes from './routes/vocabularyRoutes.js';
+import progressRoutes from './routes/progressRoutes.js';
 import { notFound, errorHandler } from './middlewares/errorMiddleware.js';
 import { wordLookupLimiter } from './middlewares/rateLimiter.js';
 
@@ -61,6 +62,7 @@ app.get('/api/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/words', wordLookupLimiter, wordRoutes);
 app.use('/api/vocabulary', vocabularyRoutes);
+app.use('/api/progress', progressRoutes);
 
 // Error Handling
 app.use(notFound);

@@ -123,3 +123,25 @@ export function checkSentenceGrammar(text, targetWord, options = {}) {
         ...options,
     });
 }
+
+export function saveReadingProgress(progressData, options = {}) {
+    return request("/progress", {
+        method: "POST",
+        body: JSON.stringify(progressData),
+        ...options,
+    });
+}
+
+export function getReadingProgress(documentId, options = {}) {
+    return request(`/progress/${encodeURIComponent(documentId)}`, {
+        method: "GET",
+        ...options,
+    });
+}
+
+export function deleteReadingProgress(documentId, options = {}) {
+    return request(`/progress/${encodeURIComponent(documentId)}`, {
+        method: "DELETE",
+        ...options,
+    });
+}

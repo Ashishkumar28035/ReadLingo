@@ -3,7 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import * as pdfjsLib from "pdfjs-dist";
 import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
-import { lookupWord, saveVocabulary, checkVocabularySaved, translateSentence, getMe } from "../services/api";
+import { lookupWord, saveVocabulary, checkVocabularySaved, translateSentence, getMe, saveReadingProgress, getReadingProgress } from "../services/api";
+import { computePdfFingerprint } from "../utils/pdfFingerprint";
 
 // Set worker source using Vite's URL import
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -107,6 +108,14 @@ function Reader() {
     const [pageDimensions, setPageDimensions] = useState({ width: 0, height: 0 });
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+
+    // Reading Progress / Bookmark State
+    const [documentId, setDocumentId] = useState(null);
+    const [savedPage, setSavedPage] = useState(null);
+    const [savingProgress, setSavingProgress] = useState(false);
+    const [saveSuccess, setSaveSuccess] = useState(false);
+    const [resumePrompt, setResumePrompt] = useState(null);
+    const [progressNotification, setProgressNotification] = useState(null);
 
     // Contextual Popup State
     const [popupVisible, setPopupVisible] = useState(false);
@@ -483,6 +492,29 @@ function Reader() {
             setPdfDoc(doc);
             setTotalPages(doc.numPages);
             setCurrentPage(1);
+
+            // Client-side reliable document identification without uploading PDF
+            const docId = await computePdfFingerprint(doc, arrayBuffer);
+            setDocumentId(docId);
+            setSavedPage(null);
+            setResumePrompt(null);
+            setProgressNotification(null);
+
+            // Check if user has previously saved reading progress for this document
+            try {
+                const progressRes = await getReadingProgress(docId);
+                if (progressRes?.progress?.pageNumber) {
+                    const prevPage = Number(progressRes.progress.pageNumber);
+                    if (prevPage >= 1 && prevPage <= doc.numPages) {
+                        setSavedPage(prevPage);
+                        if (prevPage > 1) {
+                            setResumePrompt({ page: prevPage, totalPages: doc.numPages });
+                        }
+                    }
+                }
+            } catch (progErr) {
+                console.warn("[ReadLingo] Could not load saved progress:", progErr);
+            }
         } catch (err) {
             console.error("[ReadLingo] Error loading PDF:", err);
             setError("Failed to load PDF. Please try a different document.");
@@ -1098,6 +1130,50 @@ function Reader() {
         setScale(DEFAULT_ZOOM);
     };
 
+    const handleSaveProgress = async () => {
+        if (!documentId || !currentPage) return;
+        try {
+            setSavingProgress(true);
+            setProgressNotification(null);
+            await saveReadingProgress({
+                documentId,
+                pageNumber: currentPage,
+                totalPages,
+                title: bookTitle || "PDF Document",
+            });
+            setSavedPage(currentPage);
+            setSaveSuccess(true);
+            setTimeout(() => setSaveSuccess(false), 2500);
+            setProgressNotification({
+                type: "success",
+                message: `Reading progress saved! Page ${currentPage} of ${totalPages} bookmarked.`,
+            });
+            setTimeout(() => setProgressNotification(null), 3500);
+        } catch (err) {
+            console.error("[ReadLingo] Error saving reading progress:", err);
+            setProgressNotification({
+                type: "error",
+                message: err.message || "Failed to save reading progress.",
+            });
+            setTimeout(() => setProgressNotification(null), 4000);
+        } finally {
+            setSavingProgress(false);
+        }
+    };
+
+    const handleResumeReading = (targetPage) => {
+        if (targetPage >= 1 && targetPage <= totalPages) {
+            closePopup();
+            setCurrentPage(targetPage);
+            setResumePrompt(null);
+            setProgressNotification({
+                type: "success",
+                message: `Resumed reading from page ${targetPage}!`,
+            });
+            setTimeout(() => setProgressNotification(null), 3500);
+        }
+    };
+
     return (
         <div className="reader-page">
             {/* Top Navigation */}
@@ -1266,6 +1342,90 @@ function Reader() {
                             Reset
                         </button>
                     </div>
+
+                    <div className="toolbar-divider" />
+
+                    {/* Reading Progress & Bookmark Actions */}
+                    <div className="toolbar-group">
+                        <button
+                            type="button"
+                            className={`toolbar-btn bookmark-btn ${savedPage === currentPage ? "bookmarked" : ""} ${saveSuccess ? "saved-success" : ""}`}
+                            onClick={handleSaveProgress}
+                            disabled={savingProgress}
+                            title={savedPage === currentPage ? `Page ${currentPage} is bookmarked` : "Save current page bookmark"}
+                            aria-label="Save reading progress"
+                        >
+                            {savingProgress ? (
+                                <>
+                                    <span className="btn-spinner inline" />
+                                    <span>Saving...</span>
+                                </>
+                            ) : saveSuccess ? (
+                                <>
+                                    <span>✓</span>
+                                    <span>Saved!</span>
+                                </>
+                            ) : savedPage === currentPage ? (
+                                <>
+                                    <span>🔖</span>
+                                    <span>Bookmarked (Pg {currentPage})</span>
+                                </>
+                            ) : (
+                                <>
+                                    <span>🔖</span>
+                                    <span>Save Progress</span>
+                                </>
+                            )}
+                        </button>
+
+                        {savedPage && savedPage !== currentPage && (
+                            <button
+                                type="button"
+                                className="toolbar-btn jump-bookmark-btn"
+                                onClick={() => handleResumeReading(savedPage)}
+                                title={`Jump to saved bookmark (Page ${savedPage})`}
+                            >
+                                <span>Go to Pg {savedPage}</span>
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Resume Reading Notification Banner */}
+            {pdfDoc && resumePrompt && (
+                <div className="reader-resume-banner" role="region" aria-label="Resume reading notification">
+                    <div className="resume-banner-content">
+                        <span className="resume-banner-icon">🔖</span>
+                        <div className="resume-banner-text">
+                            <strong>Welcome back!</strong> You previously read up to <strong>Page {resumePrompt.page}</strong> of {resumePrompt.totalPages}.
+                        </div>
+                    </div>
+                    <div className="resume-banner-actions">
+                        <button
+                            type="button"
+                            className="resume-btn-confirm"
+                            onClick={() => handleResumeReading(resumePrompt.page)}
+                        >
+                            ▶ Resume Reading (Pg {resumePrompt.page})
+                        </button>
+                        <button
+                            type="button"
+                            className="resume-btn-dismiss"
+                            onClick={() => setResumePrompt(null)}
+                            title="Start reading from Page 1"
+                        >
+                            Start from Pg 1
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* Transient Reading Progress Toast Notification */}
+            {progressNotification && (
+                <div className={`reader-toast-notification ${progressNotification.type}`} role="status">
+                    <span className="toast-icon">{progressNotification.type === "success" ? "✓" : "⚠️"}</span>
+                    <span>{progressNotification.message}</span>
                 </div>
             )}
 
