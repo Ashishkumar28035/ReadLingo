@@ -173,12 +173,7 @@ function Login() {
                             </div>
 
                             <div className="form-group">
-                                <div className="form-label-row">
-                                    <label htmlFor="password">Password</label>
-                                    <Link to="/forgot-password" className="auth-forgot-link">
-                                        Forgot Password?
-                                    </Link>
-                                </div>
+                                <label htmlFor="password">Password</label>
                                 <PasswordInput
                                     id="password"
                                     placeholder="Enter your password"
