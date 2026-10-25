@@ -1,5 +1,7 @@
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import User from '../models/User.js';
+import { sendPasswordResetEmail } from '../utils/emailService.js';
 
 // Helper to generate JWT token
 const generateToken = (id) => {
@@ -127,5 +129,112 @@ export const getMe = async (req, res) => {
   } catch (error) {
     console.error('Get profile error:', error);
     res.status(500).json({ message: 'Server error retrieving profile' });
+  }
+};
+
+// @desc    Forgot Password - Request reset link
+// @route   POST /api/auth/forgot-password
+// @access  Public
+export const forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email || typeof email !== 'string') {
+      return res.status(400).json({ message: 'Please provide a valid email address' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (normalizedEmail.length > 255 || !EMAIL_REGEX.test(normalizedEmail)) {
+      return res.status(400).json({ message: 'Please provide a valid email address' });
+    }
+
+    // Generic confirmation message returned for all valid email submissions to prevent enumeration
+    const genericResponse = {
+      message: 'If an account exists with this email address, password reset instructions have been sent.',
+    };
+
+    const user = await User.findOne({ email: normalizedEmail });
+    if (!user) {
+      return res.status(200).json(genericResponse);
+    }
+
+    // Generate single-use random token, hash and store on user record
+    const resetToken = user.createPasswordResetToken();
+    await user.save({ validateBeforeSave: false });
+
+    // Construct reset link URL
+    const clientBaseUrl = process.env.CLIENT_URL || req.headers.origin || 'http://localhost:5173';
+    const resetUrl = `${clientBaseUrl}/reset-password?token=${resetToken}`;
+
+    try {
+      await sendPasswordResetEmail({
+        to: user.email,
+        name: user.name,
+        resetUrl,
+        resetToken,
+      });
+    } catch {
+      // Invalidate token if email dispatch fails so user can re-request
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save({ validateBeforeSave: false });
+      return res.status(500).json({ message: 'Could not send reset instructions. Please try again later.' });
+    }
+
+    return res.status(200).json(genericResponse);
+  } catch (error) {
+    console.error('Forgot password error:', error);
+    res.status(500).json({ message: 'Server error occurred during password reset request' });
+  }
+};
+
+// @desc    Reset Password with secure token
+// @route   POST /api/auth/reset-password
+// @access  Public
+export const resetPassword = async (req, res) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ message: 'Invalid or missing reset token' });
+    }
+
+    if (!password || typeof password !== 'string') {
+      return res.status(400).json({ message: 'Please provide a new password' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters' });
+    }
+
+    if (password.length > 128) {
+      return res.status(400).json({ message: 'Password cannot exceed 128 characters' });
+    }
+
+    // Hash incoming token using SHA-256 to compare with stored hash
+    const hashedToken = crypto.createHash('sha256').update(token.trim()).digest('hex');
+
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpire: { $gt: Date.now() },
+    }).select('+password +resetPasswordToken +resetPasswordExpire +passwordChangedAt');
+
+    if (!user) {
+      return res.status(400).json({ message: 'Invalid or expired password reset token' });
+    }
+
+    // Update password and invalidate reset token
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
+
+    return res.status(200).json({
+      message: 'Password reset successful. You can now log in with your new password.',
+    });
+  } catch (error) {
+    console.error('Reset password error:', error);
+    res.status(500).json({ message: 'Server error occurred during password reset' });
   }
 };

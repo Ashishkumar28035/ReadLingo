@@ -5,6 +5,11 @@ import pdfjsWorker from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import "pdfjs-dist/web/pdf_viewer.css";
 import { lookupWord, saveVocabulary, checkVocabularySaved, translateSentence, getMe, saveReadingProgress, getReadingProgress } from "../services/api";
 import { computePdfFingerprint } from "../utils/pdfFingerprint";
+import {
+    clampPositionToViewport,
+    computeAutoPopupPosition,
+    resolveEffectivePopupPosition,
+} from "../utils/popupPositioning";
 
 // Set worker source using Vite's URL import
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
@@ -18,72 +23,6 @@ const isSpeechSupported =
     typeof window !== "undefined" &&
     "speechSynthesis" in window &&
     typeof window.SpeechSynthesisUtterance !== "undefined";
-
-// Safe, non-overlapping initial position calculator for word and sentence popups
-function computeInitialPopupPosition(range, popupType, fallbackEl = null) {
-    if (!range) return { top: 100, left: 100 };
-
-    const clientRects = Array.from(range.getClientRects()).filter(
-        (r) => r.width > 0 && r.height > 0
-    );
-    const bRect = range.getBoundingClientRect();
-
-    let selTop = bRect?.top || 0;
-    let selBottom = bRect?.bottom || 0;
-    let selLeft = bRect?.left || 0;
-    let selRight = bRect?.right || 0;
-
-    if (clientRects.length > 0) {
-        selTop = Math.min(...clientRects.map((r) => r.top));
-        selBottom = Math.max(...clientRects.map((r) => r.bottom));
-        selLeft = Math.min(...clientRects.map((r) => r.left));
-        selRight = Math.max(...clientRects.map((r) => r.right));
-    } else if (fallbackEl?.getBoundingClientRect) {
-        const fRect = fallbackEl.getBoundingClientRect();
-        if (fRect.width > 0 || fRect.height > 0) {
-            selTop = fRect.top;
-            selBottom = fRect.bottom;
-            selLeft = fRect.left;
-            selRight = fRect.right;
-        }
-    }
-
-    const isWord = popupType === "word";
-    const popupWidth = Math.min(isWord ? 340 : 400, window.innerWidth - 32);
-    const estimatedHeight = isWord ? 310 : 250;
-    const margin = 14;
-    const offset = 10;
-
-    // Center horizontally with the selected text
-    const selCenterX = selLeft + (selRight - selLeft) / 2;
-    let left = selCenterX - popupWidth / 2;
-    left = Math.max(margin, Math.min(left, window.innerWidth - popupWidth - margin));
-
-    // Vertical placement: prefer below selection, fallback above, fallback clamp
-    const spaceBelow = window.innerHeight - selBottom;
-    const spaceAbove = selTop;
-
-    let top;
-    if (spaceBelow >= estimatedHeight + offset + margin) {
-        // Fits comfortably below selection without covering text
-        top = selBottom + offset;
-    } else if (spaceAbove >= estimatedHeight + offset + margin) {
-        // Fits comfortably above selection without covering text
-        top = selTop - estimatedHeight - offset;
-    } else {
-        // Limited screen height: place on whichever side offers more space
-        if (spaceBelow >= spaceAbove) {
-            top = Math.max(margin, window.innerHeight - estimatedHeight - margin);
-        } else {
-            top = margin;
-        }
-    }
-
-    // Safety clamp within viewport
-    top = Math.max(margin, Math.min(top, window.innerHeight - estimatedHeight - margin));
-
-    return { top: Math.round(top), left: Math.round(left) };
-}
 
 function Reader() {
     const navigate = useNavigate();
@@ -308,13 +247,73 @@ function Reader() {
     const [isDragging, setIsDragging] = useState(false); // File drop drag
     const [isMovingPopup, setIsMovingPopup] = useState(false); // Movable popup drag
     const dragStartRef = useRef({ startX: 0, startY: 0, initialLeft: 0, initialTop: 0 });
-    const hasUserMovedRef = useRef(false);
+    const sessionUserPosRef = useRef(null); // Preserves user manual drag position for current reading session
+    const [hasUserMovedInSession, setHasUserMovedInSession] = useState(false);
+    const [isPopupMinimized, setIsPopupMinimized] = useState(false);
+    const [dockMode, setDockMode] = useState("float"); // "float" | "bottom"
+    const dockModeRef = useRef(dockMode);
+    useEffect(() => {
+        dockModeRef.current = dockMode;
+    }, [dockMode]);
+
     const isPointerActiveRef = useRef(false);
     const isTouchActiveRef = useRef(false);
     const popupPosRef = useRef(popupPos);
     useEffect(() => {
         popupPosRef.current = popupPos;
     }, [popupPos]);
+
+    const popupVisibleRef = useRef(popupVisible);
+    useEffect(() => {
+        popupVisibleRef.current = popupVisible;
+    }, [popupVisible]);
+
+    const popupTypeRef = useRef(popupType);
+    useEffect(() => {
+        popupTypeRef.current = popupType;
+    }, [popupType]);
+
+    // Reset user-adjusted position back to automatic anchor near text
+    const handleResetPosition = useCallback((e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        sessionUserPosRef.current = null;
+        setHasUserMovedInSession(false);
+        setDockMode("float");
+        try {
+            const selection = window.getSelection();
+            const range = selection?.rangeCount > 0 ? selection.getRangeAt(0) : null;
+            const newPos = computeAutoPopupPosition(range, popupTypeRef.current);
+            setPopupPos(newPos);
+        } catch {
+            // Safe ignore
+        }
+    }, []);
+
+    // Toggle docking popup to bottom of the viewport (keeps reading text unobstructed)
+    const toggleDockBottom = useCallback((e) => {
+        if (e) {
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        const nextMode = dockModeRef.current === "bottom" ? "float" : "bottom";
+        setDockMode(nextMode);
+        const popupEl = popupRef.current;
+        const dimensions = {
+            width: popupEl?.offsetWidth || 340,
+            height: popupEl?.offsetHeight || 300,
+        };
+        const targetPos = resolveEffectivePopupPosition({
+            userManualPos: sessionUserPosRef.current,
+            range: null,
+            popupType: popupTypeRef.current,
+            popupDimensions: dimensions,
+            dockMode: nextMode,
+        });
+        setPopupPos(targetPos);
+    }, []);
 
     // Drag popup pointer handler
     const handleDragPointerDown = useCallback((e) => {
@@ -324,7 +323,8 @@ function Reader() {
             e.target.closest("a") ||
             e.target.closest("input") ||
             e.target.closest(".popup-audio-btn") ||
-            e.target.closest(".popup-close-btn")
+            e.target.closest(".popup-close-btn") ||
+            e.target.closest(".popup-action-btn")
         ) {
             return;
         }
@@ -339,11 +339,10 @@ function Reader() {
             initialLeft: rect ? rect.left : popupPosRef.current.left,
             initialTop: rect ? rect.top : popupPosRef.current.top,
         };
-        hasUserMovedRef.current = true;
         setIsMovingPopup(true);
     }, []);
 
-    // Global drag pointer tracking for smooth movable popup
+    // Global drag pointer tracking with boundary clamping
     useEffect(() => {
         if (!isMovingPopup) return;
 
@@ -355,16 +354,20 @@ function Reader() {
             const popupWidth = popupEl?.offsetWidth || 340;
             const popupHeight = popupEl?.offsetHeight || 300;
 
-            const margin = 10;
-            const minLeft = margin;
-            const maxLeft = Math.max(margin, window.innerWidth - popupWidth - margin);
-            const minTop = margin;
-            const maxTop = Math.max(margin, window.innerHeight - popupHeight - margin);
+            const clamped = clampPositionToViewport(
+                {
+                    left: dragStartRef.current.initialLeft + deltaX,
+                    top: dragStartRef.current.initialTop + deltaY,
+                },
+                { width: popupWidth, height: popupHeight }
+            );
 
-            const nextLeft = Math.min(Math.max(dragStartRef.current.initialLeft + deltaX, minLeft), maxLeft);
-            const nextTop = Math.min(Math.max(dragStartRef.current.initialTop + deltaY, minTop), maxTop);
-
-            setPopupPos({ left: nextLeft, top: nextTop });
+            sessionUserPosRef.current = clamped;
+            setPopupPos(clamped);
+            setHasUserMovedInSession(true);
+            if (dockModeRef.current !== "float") {
+                setDockMode("float");
+            }
         };
 
         const handlePointerUp = () => {
@@ -382,15 +385,34 @@ function Reader() {
         };
     }, [isMovingPopup]);
 
-    const popupVisibleRef = useRef(popupVisible);
+    // Screen rotation & viewport resize boundary enforcement
     useEffect(() => {
-        popupVisibleRef.current = popupVisible;
-    }, [popupVisible]);
+        const handleViewportChange = () => {
+            if (popupVisibleRef.current) {
+                const popupEl = popupRef.current;
+                const dimensions = {
+                    width: popupEl?.offsetWidth || 340,
+                    height: popupEl?.offsetHeight || 300,
+                };
+                setPopupPos((prevPos) => {
+                    const clamped = clampPositionToViewport(prevPos, dimensions);
+                    if (sessionUserPosRef.current) {
+                        sessionUserPosRef.current = clamped;
+                    }
+                    return clamped;
+                });
+            }
+        };
 
-    const popupTypeRef = useRef(popupType);
-    useEffect(() => {
-        popupTypeRef.current = popupType;
-    }, [popupType]);
+        window.addEventListener("resize", handleViewportChange);
+        window.addEventListener("orientationchange", handleViewportChange);
+
+        return () => {
+            window.removeEventListener("resize", handleViewportChange);
+            window.removeEventListener("orientationchange", handleViewportChange);
+        };
+    }, []);
+
 
     const activeWordRef = useRef("");
     const activeSentenceRef = useRef("");
@@ -680,13 +702,11 @@ function Reader() {
     const isClosingRef = useRef(false);
     const closingTimeoutRef = useRef(null);
 
-    // Close popup: resets all state, clears selection, and aborts pending lookups
-    // Close popup: resets all state, clears selection, and aborts pending lookups
+    // Close popup: resets visible state, clears selection, and aborts pending lookups
     const closePopup = useCallback(() => {
         isClosingRef.current = true;
         activeWordRef.current = "";
         activeSentenceRef.current = "";
-        hasUserMovedRef.current = false;
         setIsMovingPopup(false);
         if (closingTimeoutRef.current) {
             clearTimeout(closingTimeoutRef.current);
@@ -825,8 +845,17 @@ function Reader() {
             activeWordRef.current = cleanedWord;
             activeSentenceRef.current = "";
 
-            hasUserMovedRef.current = false;
-            const newPos = computeInitialPopupPosition(range, "word", startEl);
+            const newPos = resolveEffectivePopupPosition({
+                userManualPos: sessionUserPosRef.current,
+                range,
+                popupType: "word",
+                popupDimensions: {
+                    width: popupRef.current?.offsetWidth || 340,
+                    height: popupRef.current?.offsetHeight || 310,
+                },
+                dockMode: dockModeRef.current,
+                fallbackEl: startEl,
+            });
 
             stopPronunciation();
             setPopupType("word");
@@ -878,8 +907,17 @@ function Reader() {
             activeSentenceRef.current = cleanedSentence;
             activeWordRef.current = "";
 
-            hasUserMovedRef.current = false;
-            const newPos = computeInitialPopupPosition(range, "sentence", startEl);
+            const newPos = resolveEffectivePopupPosition({
+                userManualPos: sessionUserPosRef.current,
+                range,
+                popupType: "sentence",
+                popupDimensions: {
+                    width: popupRef.current?.offsetWidth || 400,
+                    height: popupRef.current?.offsetHeight || 250,
+                },
+                dockMode: dockModeRef.current,
+                fallbackEl: startEl,
+            });
 
             stopPronunciation();
             setPopupType("sentence");
@@ -928,6 +966,14 @@ function Reader() {
             selectionTimeoutRef.current = setTimeout(handleSelection, delay);
         };
 
+        const isTouchDevice = () => {
+            return typeof window !== "undefined" && (
+                "ontouchstart" in window ||
+                navigator.maxTouchPoints > 0 ||
+                (window.matchMedia && window.matchMedia("(pointer: coarse)").matches)
+            );
+        };
+
         const onMouseDown = (e) => {
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
@@ -935,10 +981,6 @@ function Reader() {
             isPointerActiveRef.current = true;
             if (selectionTimeoutRef.current) {
                 clearTimeout(selectionTimeoutRef.current);
-            }
-            // Dismiss previous popup when user starts selecting new text in the PDF reader
-            if (popupVisibleRef.current && (e.target.closest(".textLayer") || e.target.closest(".pdf-page-wrapper"))) {
-                closePopup();
             }
         };
 
@@ -958,10 +1000,7 @@ function Reader() {
             if (selectionTimeoutRef.current) {
                 clearTimeout(selectionTimeoutRef.current);
             }
-            // Dismiss previous popup when user starts touching PDF reader to select text
-            if (popupVisibleRef.current && (e.target.closest(".textLayer") || e.target.closest(".pdf-page-wrapper"))) {
-                closePopup();
-            }
+            // Do NOT prematurely close popup on touchstart; allow user to freely complete selection gesture
         };
 
         const onTouchEnd = (e) => {
@@ -969,12 +1008,12 @@ function Reader() {
             if (popupRef.current && popupRef.current.contains(e.target)) {
                 return;
             }
-            // Allow 120ms for mobile selection handles to settle
-            scheduleSelection(120);
+            // Deliberate delay: allow 350ms for mobile selection handles to settle
+            scheduleSelection(350);
         };
 
         const onSelectionChange = () => {
-            // CRITICAL: Do NOT schedule or open popup while user is actively dragging pointer or touch!
+            // CRITICAL: Do NOT schedule or open popup while user is actively dragging pointer or touch handles!
             if (isPointerActiveRef.current || isTouchActiveRef.current) {
                 if (selectionTimeoutRef.current) {
                     clearTimeout(selectionTimeoutRef.current);
@@ -987,7 +1026,10 @@ function Reader() {
             const text = selection.toString().trim();
             if (!text) return;
 
-            scheduleSelection(200);
+            // On mobile touch devices, use 450ms debounce to avoid intercepting handle adjustment
+            // On desktop mouse, use 150ms for snappy responsiveness
+            const delay = isTouchDevice() ? 450 : 150;
+            scheduleSelection(delay);
         };
 
         document.addEventListener("mousedown", onMouseDown);
@@ -1490,7 +1532,7 @@ function Reader() {
             {popupVisible && (
                 <div
                     ref={popupRef}
-                    className={`word-popup ${popupType === "sentence" ? "sentence-popup" : ""} ${isMovingPopup ? "is-dragging" : ""}`}
+                    className={`word-popup ${popupType === "sentence" ? "sentence-popup" : ""} ${isMovingPopup ? "is-dragging" : ""} ${isPopupMinimized ? "is-minimized" : ""} ${dockMode === "bottom" ? "is-docked-bottom" : ""}`}
                     style={{
                         position: "fixed",
                         top: `${popupPos.top}px`,
@@ -1498,70 +1540,138 @@ function Reader() {
                         zIndex: 99999,
                     }}
                 >
-                    {/* Clear drag handle pill at the top */}
-                    <div
-                        className="popup-drag-bar"
-                        title="Drag to reposition popup"
-                        aria-label="Drag popup"
-                        onPointerDown={handleDragPointerDown}
-                    >
-                        <span className="popup-drag-handle" />
-                    </div>
-
-                    {popupType === "word" ? (
-                        <>
+                    {isPopupMinimized ? (
+                        <div
+                            className="popup-minimized-capsule"
+                            onPointerDown={handleDragPointerDown}
+                        >
                             <div
-                                className="popup-header"
-                                onPointerDown={handleDragPointerDown}
+                                className="popup-minimized-pill"
+                                onClick={() => setIsPopupMinimized(false)}
+                                title="Tap to expand definition/translation"
                             >
-                                <div className="popup-word-title">
-                                    <span className="popup-word-text">{wordData?.word || selectedWord}</span>
-                                    {isSpeechSupported && (
-                                        <button
-                                            type="button"
-                                            className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
-                                            onClick={togglePronunciation}
-                                            onPointerDown={(e) => e.stopPropagation()}
-                                            onMouseDown={(e) => e.stopPropagation()}
-                                            onTouchEnd={(e) => e.stopPropagation()}
-                                            title={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
-                                            aria-label={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
-                                        >
-                                            <svg
-                                                width="15"
-                                                height="15"
-                                                viewBox="0 0 24 24"
-                                                fill="none"
-                                                stroke="currentColor"
-                                                strokeWidth="2"
-                                                strokeLinecap="round"
-                                                strokeLinejoin="round"
-                                                aria-hidden="true"
-                                            >
-                                                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-                                                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
-                                                {isSpeaking && <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />}
-                                            </svg>
-                                        </button>
-                                    )}
-                                    {wordData?.phonetic && (
-                                        <span className="popup-phonetic">{wordData.phonetic}</span>
-                                    )}
-                                </div>
+                                <span className="minimized-icon">📖</span>
+                                <span className="minimized-word">
+                                    {popupType === "word" ? (wordData?.word || selectedWord) : (selectedSentence ? `“${selectedSentence.slice(0, 24)}...”` : "Sentence")}
+                                </span>
+                                {popupType === "word" && wordData?.hindiMeaning && wordData.hindiMeaning !== "Translation not available." && (
+                                    <span className="minimized-hindi-badge">{wordData.hindiMeaning}</span>
+                                )}
+                            </div>
+                            <div className="minimized-actions" onPointerDown={(e) => e.stopPropagation()}>
                                 <button
                                     type="button"
-                                    className="popup-close-btn"
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        closePopup();
-                                    }}
-                                    title="Close (Esc)"
+                                    className="popup-action-btn"
+                                    onClick={() => setIsPopupMinimized(false)}
+                                    title="Expand popup"
+                                    aria-label="Expand popup"
+                                >
+                                    ▢
+                                </button>
+                                <button
+                                    type="button"
+                                    className="popup-action-btn popup-close-btn"
+                                    onClick={closePopup}
+                                    title="Close"
+                                    aria-label="Close"
                                 >
                                     ✕
                                 </button>
                             </div>
+                        </div>
+                    ) : (
+                        <>
+                            {/* Clear drag handle pill at the top */}
+                            <div
+                                className="popup-drag-bar"
+                                title="Drag to reposition popup"
+                                aria-label="Drag popup"
+                                onPointerDown={handleDragPointerDown}
+                            >
+                                <span className="popup-drag-handle" />
+                            </div>
+
+                            {popupType === "word" ? (
+                                <>
+                                    <div
+                                        className="popup-header"
+                                        onPointerDown={handleDragPointerDown}
+                                    >
+                                        <div className="popup-word-title">
+                                            <span className="popup-word-text">{wordData?.word || selectedWord}</span>
+                                            {isSpeechSupported && (
+                                                <button
+                                                    type="button"
+                                                    className={`popup-audio-btn ${isSpeaking ? "playing" : ""}`}
+                                                    onClick={togglePronunciation}
+                                                    onPointerDown={(e) => e.stopPropagation()}
+                                                    onMouseDown={(e) => e.stopPropagation()}
+                                                    onTouchEnd={(e) => e.stopPropagation()}
+                                                    title={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
+                                                    aria-label={isSpeaking ? "Stop pronunciation" : "Pronounce word"}
+                                                >
+                                                    <svg
+                                                        width="15"
+                                                        height="15"
+                                                        viewBox="0 0 24 24"
+                                                        fill="none"
+                                                        stroke="currentColor"
+                                                        strokeWidth="2"
+                                                        strokeLinecap="round"
+                                                        strokeLinejoin="round"
+                                                        aria-hidden="true"
+                                                    >
+                                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                                                        {isSpeaking && <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />}
+                                                    </svg>
+                                                </button>
+                                            )}
+                                            {wordData?.phonetic && (
+                                                <span className="popup-phonetic">{wordData.phonetic}</span>
+                                            )}
+                                        </div>
+                                        <div className="popup-header-actions" onPointerDown={(e) => e.stopPropagation()}>
+                                            {(hasUserMovedInSession || dockMode === "bottom") && (
+                                                <button
+                                                    type="button"
+                                                    className="popup-action-btn"
+                                                    onClick={handleResetPosition}
+                                                    title="Reset to default position near text"
+                                                    aria-label="Reset position near text"
+                                                >
+                                                    🎯
+                                                </button>
+                                            )}
+                                            <button
+                                                type="button"
+                                                className={`popup-action-btn ${dockMode === "bottom" ? "active" : ""}`}
+                                                onClick={toggleDockBottom}
+                                                title={dockMode === "bottom" ? "Float popup freely" : "Dock to bottom (keeps text clear)"}
+                                                aria-label="Toggle dock to bottom"
+                                            >
+                                                ⬇️
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="popup-action-btn"
+                                                onClick={() => setIsPopupMinimized(true)}
+                                                title="Minimize popup (allows unobstructed selection)"
+                                                aria-label="Minimize popup"
+                                            >
+                                                —
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="popup-close-btn"
+                                                onClick={closePopup}
+                                                title="Close (Esc)"
+                                                aria-label="Close"
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+                                    </div>
 
                             {popupLoading && (
                                 <div className="popup-loading">
@@ -1676,19 +1786,46 @@ function Reader() {
                                         </button>
                                     )}
                                 </div>
-                                <button
-                                    type="button"
-                                    className="popup-close-btn"
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        closePopup();
-                                    }}
-                                    title="Close (Esc)"
-                                >
-                                    ✕
-                                </button>
+                                <div className="popup-header-actions" onPointerDown={(e) => e.stopPropagation()}>
+                                    {(hasUserMovedInSession || dockMode === "bottom") && (
+                                        <button
+                                            type="button"
+                                            className="popup-action-btn"
+                                            onClick={handleResetPosition}
+                                            title="Reset to default position near text"
+                                            aria-label="Reset position near text"
+                                        >
+                                            🎯
+                                        </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        className={`popup-action-btn ${dockMode === "bottom" ? "active" : ""}`}
+                                        onClick={toggleDockBottom}
+                                        title={dockMode === "bottom" ? "Float popup freely" : "Dock to bottom (keeps text clear)"}
+                                        aria-label="Toggle dock to bottom"
+                                    >
+                                        ⬇️
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="popup-action-btn"
+                                        onClick={() => setIsPopupMinimized(true)}
+                                        title="Minimize popup (allows unobstructed selection)"
+                                        aria-label="Minimize popup"
+                                    >
+                                        —
+                                    </button>
+                                    <button
+                                        type="button"
+                                        className="popup-close-btn"
+                                        onClick={closePopup}
+                                        title="Close (Esc)"
+                                        aria-label="Close"
+                                    >
+                                        ✕
+                                    </button>
+                                </div>
                             </div>
 
                             {/* Selected Sentence Quote Display */}
@@ -1721,6 +1858,8 @@ function Reader() {
                             )}
                         </>
                     )}
+                    </>
+                )}
                 </div>
             )}
         </div>

@@ -268,6 +268,105 @@ a {
   opacity: 0.75;
 }
 
+.form-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 7px;
+}
+
+.form-label-row label {
+  margin-bottom: 0;
+}
+
+.auth-forgot-link {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+  text-decoration: none;
+  transition: color var(--transition-fast);
+}
+
+.auth-forgot-link:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.password-input-wrapper {
+  position: relative;
+  width: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.password-input-wrapper input {
+  padding-right: 44px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  padding: 8px;
+  min-width: 40px;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  border-radius: var(--radius-sm);
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.password-toggle-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--bg-surface-hover);
+}
+
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.auth-success-box,
+.auth-error-box {
+  background: var(--bg-surface-hover);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  padding: 24px 20px;
+  text-align: center;
+  margin-bottom: 20px;
+  animation: fadeIn 0.2s ease-out;
+}
+
+.auth-success-box {
+  background: #f0fdf4;
+  border-color: #bbf7d0;
+}
+
+.auth-success-icon {
+  font-size: 36px;
+  margin-bottom: 12px;
+}
+
+.auth-success-box h3,
+.auth-error-box h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.auth-success-box p {
+  font-size: 14px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
 .auth-button {
   width: 100%;
   padding: 13px;
@@ -1185,6 +1284,111 @@ a {
 .popup-close-btn:hover {
   background: var(--bg-surface-hover);
   color: var(--text-primary);
+}
+
+.popup-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.popup-action-btn {
+  background: transparent;
+  border: none;
+  font-size: 13px;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  transition: all var(--transition-fast);
+  flex-shrink: 0;
+}
+
+.popup-action-btn:hover {
+  background: var(--bg-surface-hover);
+  color: var(--text-primary);
+}
+
+.popup-action-btn.active {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+/* Minimized Popup Capsule */
+.word-popup.is-minimized {
+  padding: 8px 14px;
+  width: auto;
+  max-width: min(420px, calc(100vw - 24px));
+  min-height: unset;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.25), 0 0 0 1px var(--border-subtle);
+  animation: popupSlideIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+  overflow: visible;
+}
+
+.popup-minimized-capsule {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+
+.popup-minimized-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.popup-minimized-pill:hover .minimized-word {
+  color: var(--accent);
+}
+
+.minimized-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.minimized-word {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-primary);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimized-hindi-badge {
+  font-size: 12.5px;
+  color: #15803d;
+  background: #dcfce7;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-weight: 500;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.minimized-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
 }
 
 .popup-loading {
