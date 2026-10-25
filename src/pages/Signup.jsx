@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { signup } from "../services/api";
+import PasswordInput from "../components/PasswordInput";
 
 function Signup() {
     const navigate = useNavigate();
@@ -202,9 +203,8 @@ function Signup() {
 
                     <div className="form-group">
                         <label htmlFor="password">Password (min 6 characters)</label>
-                        <input
+                        <PasswordInput
                             id="password"
-                            type="password"
                             placeholder="Create a secure password"
                             autoComplete="new-password"
                             value={formData.password}
@@ -218,9 +218,8 @@ function Signup() {
                         <label htmlFor="confirmPassword">
                             Confirm Password
                         </label>
-                        <input
+                        <PasswordInput
                             id="confirmPassword"
-                            type="password"
                             placeholder="Repeat password"
                             autoComplete="new-password"
                             value={formData.confirmPassword}

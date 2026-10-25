@@ -27,11 +27,18 @@ async function request(endpoint, options = {}) {
         if (
             response.status === 401 &&
             !endpoint.startsWith("/auth/login") &&
-            !endpoint.startsWith("/auth/signup")
+            !endpoint.startsWith("/auth/signup") &&
+            !endpoint.startsWith("/auth/forgot-password") &&
+            !endpoint.startsWith("/auth/reset-password")
         ) {
             localStorage.removeItem("token");
             localStorage.removeItem("user");
-            if (window.location.pathname !== "/login" && window.location.pathname !== "/signup") {
+            if (
+                window.location.pathname !== "/login" &&
+                window.location.pathname !== "/signup" &&
+                window.location.pathname !== "/forgot-password" &&
+                window.location.pathname !== "/reset-password"
+            ) {
                 window.location.href = "/login";
             }
         }
@@ -52,6 +59,20 @@ export function login(credentials) {
     return request("/auth/login", {
         method: "POST",
         body: JSON.stringify(credentials),
+    });
+}
+
+export function forgotPassword(email) {
+    return request("/auth/forgot-password", {
+        method: "POST",
+        body: JSON.stringify({ email }),
+    });
+}
+
+export function resetPassword({ token, password }) {
+    return request("/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ token, password }),
     });
 }
 

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { login } from "../services/api";
+import PasswordInput from "../components/PasswordInput";
 
 function Login() {
     const navigate = useNavigate();
@@ -172,10 +173,14 @@ function Login() {
                             </div>
 
                             <div className="form-group">
-                                <label htmlFor="password">Password</label>
-                                <input
+                                <div className="form-label-row">
+                                    <label htmlFor="password">Password</label>
+                                    <Link to="/forgot-password" className="auth-forgot-link">
+                                        Forgot Password?
+                                    </Link>
+                                </div>
+                                <PasswordInput
                                     id="password"
-                                    type="password"
                                     placeholder="Enter your password"
                                     autoComplete="current-password"
                                     value={formData.password}
