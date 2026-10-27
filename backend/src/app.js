@@ -31,16 +31,37 @@ app.use(
 );
 
 // Middleware
-const allowedOrigin = process.env.CLIENT_URL || 'http://localhost:5173';
+// Configure allowed origins (explicit allowlist preserving production and local development origins)
+const defaultOrigins = [
+  'https://readlingo-app.vercel.app',
+  'https://readlingo-three.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+];
+
+const envOrigins = (process.env.CLIENT_URL || '')
+  .split(',')
+  .map((url) => url.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
+
+const allowedOriginsSet = new Set([...defaultOrigins, ...envOrigins]);
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, server-to-server) or matching allowedOrigin
-      if (!origin || origin === allowedOrigin || process.env.NODE_ENV !== 'production') {
-        callback(null, true);
-      } else {
-        callback(new Error('Blocked by CORS policy'));
+      // Allow requests with no origin (like mobile apps, curl, server-to-server)
+      if (!origin) {
+        return callback(null, true);
       }
+
+      const normalizedOrigin = origin.replace(/\/+$/, '');
+      if (allowedOriginsSet.has(normalizedOrigin) || process.env.NODE_ENV !== 'production') {
+        return callback(null, true);
+      }
+
+      return callback(new Error('Blocked by CORS policy'));
     },
     credentials: true,
   })
